@@ -1,0 +1,14 @@
+{
+  "name": "gomoku-nexus-online-v4",
+  "private": true,
+  "version": "4.0.0",
+  "description": "五子棋 · 星穹连珠 v4（本地人机 + 在线对战）",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "test": "node --test tests/rules.test.js tests/room.test.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

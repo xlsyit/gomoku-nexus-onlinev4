@@ -3,12 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#05060f">
+  <meta name="description" content="星穹连珠：五子棋人机对战与实时在线对战">
   <title>五子棋 · 星穹连珠 v4</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=4.2">
 </head>
 <body>
-  <canvas id="gameCanvas"></canvas>
+  <canvas id="gameCanvas" role="img" aria-label="五子棋棋盘"></canvas>
 
   <div id="ui">
     <!-- 封面 -->
@@ -20,166 +23,23 @@
           <p class="subtitle">本地人机 · 实时对战 · AI v4 加强</p>
         </div>
         <div class="cover-buttons">
-          <button id="btnPvp" class="big-btn primary">👥 玩家对战</button>
-          <button id="btnVsAi" class="big-btn">🤖 人机对战</button>
-          <button id="btnOnline" class="big-btn">🌐 在线对战</button>
+          <button id="btnPvp" class="big-btn primary" type="button">
+            <span class="btn-icon" aria-hidden="true">👥</span> 玩家对战
+          </button>
+          <button id="btnVsAi" class="big-btn" type="button">
+            <span class="btn-icon" aria-hidden="true">🤖</span> 人机对战
+          </button>
+          <button id="btnOnline" class="big-btn" type="button">
+            <span class="btn-icon" aria-hidden="true">🌐</span> 在线对战
+          </button>
         </div>
         <div class="cover-actions">
-          <button id="btnSettings" class="ghost-btn">⚙ 设置</button>
-          <button id="btnLeaderboard" class="ghost-btn">🏆 排行榜</button>
-        </div>
-        <div id="aiConfig" class="config hidden">
-          <div class="config-row">
-            <span class="config-label">难度</span>
-            <div class="seg" id="segDifficulty">
-              <button data-value="easy" class="active">简单</button>
-              <button data-value="normal">普通</button>
-              <button data-value="hard">困难</button>
-            </div>
-          </div>
-          <div class="config-row">
-            <span class="config-label">先后手</span>
-            <div class="seg" id="segSide">
-              <button data-value="0" class="active">我先手 · 黑</button>
-              <button data-value="1">AI 先手 · 黑</button>
-            </div>
-          </div>
-          <div class="config-row">
-            <span class="config-label">棋盘大小</span>
-            <div class="seg" id="segAiBoardSize">
-              <button data-value="9">9</button>
-              <button data-value="13">13</button>
-              <button data-value="15" class="active">15</button>
-              <button data-value="19">19</button>
-            </div>
-          </div>
-          <div class="config-row">
-            <span class="config-label">对局规则</span>
-            <div class="seg" id="segAiRule">
-              <button data-value="free" class="active">自由</button>
-              <button data-value="renju">职业禁手</button>
-              <button data-value="folk">民间禁手</button>
-            </div>
-          </div>
-          <div id="aiRuleHint" class="rule-hint">自由规则：无禁手，五连即胜。</div>
-          <div class="config-actions">
-            <button id="btnAiStart" class="big-btn primary small">开始对局</button>
-            <button id="btnAiBack" class="ghost-btn">返回</button>
-          </div>
-        </div>
-        <div id="onlineConfig" class="screen hidden">
-          <div class="online-shell">
-            <header class="online-header">
-              <button id="btnOnlineBack" class="chip-btn">← 返回</button>
-              <div class="online-title-block">
-                <h2 class="online-title">在线对战大厅</h2>
-                <div id="onlineConnectHint" class="online-connect-hint">正在连接服务器...</div>
-              </div>
-            </header>
-            <div class="online-body">
-              <section class="online-panel">
-                <div class="panel-title">账号</div>
-                <div class="config-row">
-                  <span class="config-label">昵称</span>
-                  <input id="inputNickname" type="text" class="text-input" placeholder="注册/登录昵称" maxlength="12" autocomplete="off">
-                </div>
-                <div class="config-row">
-                  <span class="config-label">密码</span>
-                  <input id="inputPassword" type="password" class="text-input" placeholder="设置或输入密码" maxlength="32" autocomplete="off">
-                </div>
-                <div class="config-actions">
-                  <button id="btnRegister" class="big-btn primary small">注册</button>
-                  <button id="btnLogin" class="big-btn small">登录</button>
-                </div>
-              </section>
-              <section class="online-panel">
-                <div class="panel-title">创建 / 加入</div>
-                <div class="config-row">
-                  <span class="config-label">房间可见性</span>
-                  <div class="seg" id="segRoomPrivacy">
-                    <button data-value="1" class="active">公开房间</button>
-                    <button data-value="0">私密房间</button>
-                  </div>
-                </div>
-                <div class="config-actions">
-                  <button id="btnCreateRoom" class="big-btn primary small" disabled>创建房间</button>
-                </div>
-                <div class="config-row">
-                  <span class="config-label">私密房间码</span>
-                  <input id="inputRoomCode" type="text" class="text-input room-code-input" placeholder="输入6位房间码" maxlength="6" style="text-transform:uppercase" autocomplete="off">
-                </div>
-                <div class="config-actions">
-                  <button id="btnJoinRoom" class="big-btn small" disabled>加入房间</button>
-                </div>
-              </section>
-              <section class="online-panel lobby-panel">
-                <div class="panel-title">公开房间 <span id="roomCount" class="room-count"></span></div>
-                <div id="lobbyGrid" class="lobby-grid">
-                  <div class="lb-empty">加载中...</div>
-                </div>
-              </section>
-            </div>
-            <div id="roomStatus" class="room-status hidden"></div>
-          </div>
-        </div>
-        <div id="leaderboardPanel" class="config hidden leaderboard-panel">
-          <div class="lb-title">🏆 排行榜</div>
-          <div id="lbList" class="lb-list">
-            <div class="lb-empty">加载中...</div>
-          </div>
-          <div class="config-actions" style="margin-top:8px">
-            <button id="btnLbClose" class="ghost-btn">关闭</button>
-          </div>
-        </div>
-        <div id="settingsPanel" class="config hidden">
-          <div class="settings-section">对局设置</div>
-          <div class="config-row">
-            <span class="config-label">棋盘大小</span>
-            <div class="seg" id="segBoardSize">
-              <button data-value="9">9</button>
-              <button data-value="13">13</button>
-              <button data-value="15" class="active">15</button>
-              <button data-value="19">19</button>
-            </div>
-          </div>
-          <div class="config-row">
-            <span class="config-label">对局规则</span>
-            <div class="seg" id="segRule">
-              <button data-value="free" class="active">自由</button>
-              <button data-value="renju">职业禁手</button>
-              <button data-value="folk">民间禁手</button>
-            </div>
-          </div>
-          <div id="ruleHint" class="rule-hint">自由规则：无禁手，五连即胜。</div>
-          <div class="config-row">
-            <span class="config-label">UI 主题</span>
-            <div class="seg" id="segUiTheme">
-              <button data-value="neon" class="active">星云</button>
-              <button data-value="paper">纸墨</button>
-              <button data-value="terminal">终端</button>
-            </div>
-          </div>
-          <div class="settings-section">换景设置</div>
-          <div class="config-row">
-            <span class="config-label">自动换景</span>
-            <div class="seg" id="segAuto">
-              <button data-value="0" class="active">关</button>
-              <button data-value="1">开</button>
-            </div>
-          </div>
-          <div class="config-row">
-            <span class="config-label">切换间隔</span>
-            <input id="sliderInterval" type="range" min="8" max="120" step="2" value="30">
-            <span id="intervalVal" class="range-val">30 秒</span>
-          </div>
-          <div class="config-row">
-            <span class="config-label">动画时长</span>
-            <input id="sliderDuration" type="range" min="0.5" max="2.5" step="0.1" value="1.2">
-            <span id="durationVal" class="range-val">1.2 秒</span>
-          </div>
-          <div class="config-actions">
-            <button id="btnSettingsClose" class="ghost-btn">完成</button>
-          </div>
+          <button id="btnSettings" class="ghost-btn" type="button">
+            <span class="btn-icon" aria-hidden="true">⚙</span> 设置
+          </button>
+          <button id="btnLeaderboard" class="ghost-btn" type="button">
+            <span class="btn-icon" aria-hidden="true">🏆</span> 排行榜
+          </button>
         </div>
         <div class="cover-footer">
           <span>15 × 15 标准棋盘</span>
@@ -187,66 +47,294 @@
           <span>场景与贴图均为程序实时创作</span>
         </div>
       </div>
-      <button id="btnMuteCover" class="icon-btn top-right" title="声音开关">🔊</button>
+      <button id="btnMuteCover" class="icon-btn top-right" type="button" aria-label="切换声音" title="声音开关">
+        <span class="mute-icon" aria-hidden="true">🔊</span>
+      </button>
     </div>
 
     <!-- 对局 HUD -->
     <div id="hud" class="hidden">
       <div class="hud-top">
         <div class="hud-left">
-          <button id="btnMenu" class="chip-btn">🏠 菜单</button>
-          <button id="btnRestart" class="chip-btn">↺ 重开</button>
+          <button id="btnMenu" class="chip-btn" type="button" aria-label="返回菜单">🏠 菜单</button>
+          <button id="btnRestart" class="chip-btn" type="button" aria-label="重新开始">↺ 重开</button>
+          <button id="btnUndo" class="chip-btn" type="button" aria-label="悔棋">↶ 悔棋</button>
+          <button id="btnHint" class="chip-btn" type="button" aria-label="提示一步">💡 提示</button>
         </div>
         <div class="hud-center">
-          <div id="turnChip" class="chip turn-chip">黑方回合</div>
-          <div id="themeChip" class="chip theme-chip">星海霓虹</div>
+          <div id="turnChip" class="chip turn-chip" aria-live="polite">黑方回合</div>
+          <div class="hud-sub">
+            <span id="themeChip" class="chip theme-chip">星海霓虹</span>
+            <span id="connChip" class="chip conn-chip hidden">已连接</span>
+          </div>
         </div>
         <div class="hud-right">
-          <button id="btnMuteGame" class="chip-btn">🔊</button>
+          <button id="btnMuteGame" class="chip-btn icon-only" type="button" aria-label="切换声音" title="声音开关">🔊</button>
         </div>
       </div>
       <div class="hud-bottom">
         <div id="comboChip" class="combo-chip hidden">✦ 连击 ×1</div>
         <div class="hud-bottom-right">
-          <button id="btnAuto" class="chip-btn">⏱ 自动:关</button>
-          <div class="hint-chip">空格 切换场景</div>
+          <button id="btnAuto" class="chip-btn" type="button" aria-label="自动切换场景">⏱ 自动:关</button>
+          <div class="hint-chip" aria-hidden="true">空格 切换场景</div>
         </div>
       </div>
     </div>
 
-    <!-- 结算 -->
-    <div id="winOverlay" class="screen hidden">
-      <div class="win-panel">
-        <div id="winEmblem" class="win-emblem">🏆</div>
-        <h2 id="winTitle">黑方获胜</h2>
-        <div id="winMeta" class="win-meta"></div>
-        <div id="winRematchArea" class="win-rematch hidden">
-          <div id="winRematchStatus" class="win-rematch-status"></div>
-          <div class="win-actions">
-            <button id="btnRematch" class="big-btn primary small">请求再战</button>
-          </div>
-        </div>
-        <div class="win-actions" id="winNormalActions">
-          <button id="btnAgain" class="big-btn primary small">再来一局</button>
-          <button id="btnBackWin" class="ghost-btn">返回菜单</button>
-        </div>
-      </div>
-    </div>
-
-    <div id="toasts" class="toasts"></div>
+    <div id="toasts" class="toasts" aria-live="polite" aria-atomic="false"></div>
+    <div id="a11yLive" class="sr-only" aria-live="polite" aria-atomic="true"></div>
   </div>
 
-  <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
-  <script src="js/config.js"></script>
-  <script src="js/themes.js"></script>
-  <script src="js/audio.js"></script>
-  <script src="js/particles.js"></script>
-  <script src="js/effects.js"></script>
-  <script src="js/ai-core.js"></script>
-  <script src="js/ai.js"></script>
-  <script src="js/network.js"></script>
-  <script src="js/game.js"></script>
-  <script src="js/cover.js"></script>
-  <script src="js/main.js"></script>
+  <!-- 人机配置 -->
+  <dialog id="aiConfig" class="panel" aria-labelledby="aiConfigTitle">
+    <div class="panel-sheet">
+      <div class="panel-head">
+        <h2 id="aiConfigTitle" class="panel-title-lg">人机对战</h2>
+        <button class="icon-btn dialog-close" type="button" data-close="aiConfig" aria-label="关闭">✕</button>
+      </div>
+      <div class="config-row">
+        <span class="config-label">难度</span>
+        <div class="seg" id="segDifficulty" role="group" aria-label="难度">
+          <button type="button" data-value="easy" class="active">简单</button>
+          <button type="button" data-value="normal">普通</button>
+          <button type="button" data-value="hard">困难</button>
+          <button type="button" data-value="master">大师</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <span class="config-label">先后手</span>
+        <div class="seg" id="segSide" role="group" aria-label="先后手">
+          <button type="button" data-value="0" class="active">我先手 · 黑</button>
+          <button type="button" data-value="1">AI 先手 · 黑</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <span class="config-label">棋盘大小</span>
+        <div class="seg" id="segAiBoardSize" role="group" aria-label="棋盘大小">
+          <button type="button" data-value="9">9</button>
+          <button type="button" data-value="13">13</button>
+          <button type="button" data-value="15" class="active">15</button>
+          <button type="button" data-value="19">19</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <span class="config-label">对局规则</span>
+        <div class="seg" id="segAiRule" role="group" aria-label="对局规则">
+          <button type="button" data-value="free" class="active">自由</button>
+          <button type="button" data-value="renju">职业禁手</button>
+          <button type="button" data-value="folk">民间禁手</button>
+        </div>
+      </div>
+      <p id="aiRuleHint" class="rule-hint">自由规则：无禁手，五连即胜。</p>
+      <div class="config-actions">
+        <button id="btnAiStart" class="big-btn primary small" type="button" autofocus>开始对局</button>
+        <button id="btnAiBack" class="ghost-btn" type="button">返回</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 在线大厅 -->
+  <dialog id="onlineConfig" class="full-panel" aria-labelledby="onlineTitle">
+    <div class="online-shell">
+      <header class="online-header">
+        <button id="btnOnlineBack" class="chip-btn" type="button">← 返回</button>
+        <div class="online-title-block">
+          <h2 id="onlineTitle" class="online-title">在线对战大厅</h2>
+          <div id="onlineConnectHint" class="online-connect-hint" aria-live="polite">正在连接服务器…</div>
+        </div>
+      </header>
+      <div class="online-body">
+        <section class="online-panel" aria-labelledby="lblAccount">
+          <div id="lblAccount" class="panel-title">账号</div>
+          <form id="authForm" class="auth-form" novalidate>
+            <label class="config-row" for="inputNickname">
+              <span class="config-label">昵称</span>
+              <input id="inputNickname" type="text" class="text-input" placeholder="注册/登录昵称" maxlength="12"
+                     autocomplete="username" autocapitalize="none" spellcheck="false" required>
+            </label>
+            <label class="config-row" for="inputPassword">
+              <span class="config-label">密码</span>
+              <input id="inputPassword" type="password" class="text-input" placeholder="设置或输入密码" maxlength="32"
+                     autocomplete="current-password" required minlength="4">
+            </label>
+            <div class="config-actions">
+              <button id="btnRegister" class="big-btn primary small" type="button">注册</button>
+              <button id="btnLogin" class="big-btn small" type="button">登录</button>
+            </div>
+          </form>
+        </section>
+        <section class="online-panel" aria-labelledby="lblRooms">
+          <div id="lblRooms" class="panel-title">创建 / 加入</div>
+          <div class="config-row">
+            <span class="config-label">房间可见性</span>
+            <div class="seg" id="segRoomPrivacy" role="group" aria-label="房间可见性">
+              <button type="button" data-value="1" class="active">公开房间</button>
+              <button type="button" data-value="0">私密房间</button>
+            </div>
+          </div>
+          <div class="config-actions">
+            <button id="btnCreateRoom" class="big-btn primary small" type="button" disabled>创建房间</button>
+          </div>
+          <label class="config-row" for="inputRoomCode">
+            <span class="config-label">房间码</span>
+            <input id="inputRoomCode" type="text" class="text-input room-code-input" placeholder="6 位房间码"
+                   maxlength="6" autocomplete="off" autocapitalize="characters" spellcheck="false" inputmode="text">
+          </label>
+          <div class="config-actions">
+            <button id="btnJoinRoom" class="big-btn small" type="button" disabled>加入房间</button>
+          </div>
+        </section>
+        <section class="online-panel lobby-panel" aria-labelledby="lblLobby">
+          <div id="lblLobby" class="panel-title">公开房间 <span id="roomCount" class="room-count">0</span></div>
+          <div id="lobbyGrid" class="lobby-grid" aria-live="polite">
+            <div class="lb-empty">加载中…</div>
+          </div>
+        </section>
+      </div>
+      <div id="roomStatus" class="room-status" aria-live="polite"></div>
+    </div>
+  </dialog>
+
+  <!-- 排行榜 -->
+  <dialog id="leaderboardPanel" class="panel panel-wide" aria-labelledby="lbTitle">
+    <div class="panel-sheet">
+      <div class="panel-head">
+        <h2 id="lbTitle" class="panel-title-lg">🏆 排行榜</h2>
+        <button class="icon-btn dialog-close" type="button" data-close="leaderboardPanel" aria-label="关闭">✕</button>
+      </div>
+      <div class="seg" id="segLbTab" role="tablist" aria-label="排行榜类型">
+        <button type="button" data-value="online" class="active" role="tab" aria-selected="true">在线榜</button>
+        <button type="button" data-value="local" role="tab" aria-selected="false">本机战绩</button>
+      </div>
+      <div id="lbList" class="lb-list" aria-live="polite">
+        <div class="lb-empty">加载中…</div>
+      </div>
+      <div class="config-actions">
+        <button id="btnLbRefresh" class="ghost-btn" type="button">刷新</button>
+        <button id="btnLbClose" class="ghost-btn" type="button" data-close="leaderboardPanel">关闭</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 设置 -->
+  <dialog id="settingsPanel" class="panel" aria-labelledby="settingsTitle">
+    <div class="panel-sheet">
+      <div class="panel-head">
+        <h2 id="settingsTitle" class="panel-title-lg">设置</h2>
+        <button class="icon-btn dialog-close" type="button" data-close="settingsPanel" aria-label="关闭">✕</button>
+      </div>
+
+      <div class="settings-section">对局</div>
+      <div class="config-row">
+        <span class="config-label">棋盘大小</span>
+        <div class="seg" id="segBoardSize" role="group" aria-label="棋盘大小">
+          <button type="button" data-value="9">9</button>
+          <button type="button" data-value="13">13</button>
+          <button type="button" data-value="15" class="active">15</button>
+          <button type="button" data-value="19">19</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <span class="config-label">对局规则</span>
+        <div class="seg" id="segRule" role="group" aria-label="对局规则">
+          <button type="button" data-value="free" class="active">自由</button>
+          <button type="button" data-value="renju">职业禁手</button>
+          <button type="button" data-value="folk">民间禁手</button>
+        </div>
+      </div>
+      <p id="ruleHint" class="rule-hint">自由规则：无禁手，五连即胜。</p>
+      <div class="config-row">
+        <span class="config-label">UI 主题</span>
+        <div class="seg" id="segUiTheme" role="group" aria-label="界面主题">
+          <button type="button" data-value="neon" class="active">星云</button>
+          <button type="button" data-value="paper">纸墨</button>
+          <button type="button" data-value="terminal">终端</button>
+        </div>
+      </div>
+
+      <div class="settings-section">声音</div>
+      <div class="config-row">
+        <label class="config-label" for="sliderSfx">音效</label>
+        <input id="sliderSfx" type="range" min="0" max="100" step="5" value="80" aria-label="音效音量">
+        <span id="sfxVal" class="range-val">80%</span>
+      </div>
+      <div class="config-row">
+        <label class="config-label" for="sliderMusic">音乐</label>
+        <input id="sliderMusic" type="range" min="0" max="100" step="5" value="35" aria-label="音乐音量">
+        <span id="musicVal" class="range-val">35%</span>
+      </div>
+      <div class="config-row">
+        <span class="config-label">静音</span>
+        <div class="seg" id="segMute" role="group" aria-label="静音">
+          <button type="button" data-value="0" class="active">开</button>
+          <button type="button" data-value="1">关</button>
+        </div>
+      </div>
+
+      <div class="settings-section">画面</div>
+      <div class="config-row">
+        <span class="config-label">特效强度</span>
+        <div class="seg" id="segFx" role="group" aria-label="特效强度">
+          <button type="button" data-value="full" class="active">完整</button>
+          <button type="button" data-value="lite">精简</button>
+          <button type="button" data-value="off">关闭</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <span class="config-label">自动换景</span>
+        <div class="seg" id="segAuto" role="group" aria-label="自动换景">
+          <button type="button" data-value="0" class="active">关</button>
+          <button type="button" data-value="1">开</button>
+        </div>
+      </div>
+      <div class="config-row">
+        <label class="config-label" for="sliderInterval">切换间隔</label>
+        <input id="sliderInterval" type="range" min="8" max="120" step="2" value="30">
+        <span id="intervalVal" class="range-val">30 秒</span>
+      </div>
+      <div class="config-row">
+        <label class="config-label" for="sliderDuration">动画时长</label>
+        <input id="sliderDuration" type="range" min="0.5" max="2.5" step="0.1" value="1.2">
+        <span id="durationVal" class="range-val">1.2 秒</span>
+      </div>
+      <div class="config-actions">
+        <button id="btnSettingsClose" class="ghost-btn" type="button" data-close="settingsPanel">完成</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 结算 -->
+  <dialog id="winOverlay" class="panel win-dialog" aria-labelledby="winTitle">
+    <div class="panel-sheet win-panel">
+      <div id="winEmblem" class="win-emblem" aria-hidden="true">🏆</div>
+      <h2 id="winTitle">黑方获胜</h2>
+      <p id="winMeta" class="win-meta"></p>
+      <div id="winRematchArea" class="win-rematch hidden">
+        <p id="winRematchStatus" class="win-rematch-status" aria-live="polite"></p>
+        <div class="win-actions">
+          <button id="btnRematch" class="big-btn primary small" type="button">请求再战</button>
+          <button id="btnRematchBack" class="ghost-btn" type="button">返回菜单</button>
+        </div>
+      </div>
+      <div class="win-actions" id="winNormalActions">
+        <button id="btnAgain" class="big-btn primary small" type="button">再来一局</button>
+        <button id="btnBackWin" class="ghost-btn" type="button">返回菜单</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="js/vendor/socket.io.min.js?v=4.2"></script>
+  <script src="js/rules.js?v=4.2"></script>
+  <script src="js/config.js?v=4.2"></script>
+  <script src="js/themes.js?v=4.2"></script>
+  <script src="js/audio.js?v=4.2"></script>
+  <script src="js/particles.js?v=4.2"></script>
+  <script src="js/effects.js?v=4.2"></script>
+  <script src="js/ai-core.js?v=4.2"></script>
+  <script src="js/ai.js?v=4.2"></script>
+  <script src="js/network.js?v=4.2"></script>
+  <script src="js/game.js?v=4.2"></script>
+  <script src="js/cover.js?v=4.2"></script>
+  <script src="js/main.js?v=4.2"></script>
 </body>
 </html>
