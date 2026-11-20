@@ -2,6 +2,7 @@
   'use strict';
 
   var GC = window.GC;
+  var Rules = window.Rules;
   var SIZE = GC.SIZE;
   var canvas = document.getElementById('gameCanvas');
   var ctx = canvas.getContext('2d');
@@ -12,6 +13,7 @@
     winOverlay: document.getElementById('winOverlay'),
     turnChip: document.getElementById('turnChip'),
     themeChip: document.getElementById('themeChip'),
+    connChip: document.getElementById('connChip'),
     comboChip: document.getElementById('comboChip'),
     winTitle: document.getElementById('winTitle'),
     winMeta: document.getElementById('winMeta'),
@@ -20,9 +22,12 @@
     winRematchStatus: document.getElementById('winRematchStatus'),
     winNormalActions: document.getElementById('winNormalActions'),
     btnRematch: document.getElementById('btnRematch'),
+    btnRematchBack: document.getElementById('btnRematchBack'),
     btnAuto: document.getElementById('btnAuto'),
     btnMenu: document.getElementById('btnMenu'),
     btnRestart: document.getElementById('btnRestart'),
+    btnUndo: document.getElementById('btnUndo'),
+    btnHint: document.getElementById('btnHint'),
     btnAgain: document.getElementById('btnAgain'),
     btnBackWin: document.getElementById('btnBackWin'),
     btnMuteGame: document.getElementById('btnMuteGame'),
@@ -40,6 +45,8 @@
   var raf = 0;
   var activeAmbient = null;
   var options = {};
+  var geomCache = null;
+  var lastTickSecond = -1;
 
   function inB(r, c) {
     return r >= 0 && r < SIZE && c >= 0 && c < SIZE;
@@ -67,150 +74,28 @@
     return 1 + c3 * Math.pow(p - 1, 3) + c1 * Math.pow(p - 1, 2);
   }
 
-  function show(el) {
-    el.classList.remove('hidden');
+  function show(el) { if (el) el.classList.remove('hidden'); }
+  function hide(el) { if (el) el.classList.add('hidden'); }
+
+  function openDialog(d) { if (d && !d.open) { try { d.showModal(); } catch (e) { d.setAttribute('open', ''); } var s = d.querySelector('.panel-sheet'); if (s) s.scrollTop = 0; } }
+  function closeDialog(d) { if (d && d.open) { try { d.close(); } catch (e) { d.removeAttribute('open'); } } }
+  function anyDialogOpen() { return !!document.querySelector('dialog[open]'); }
+
+  function announce(text) {
+    if (GC.announce) GC.announce(text);
   }
 
-  function hide(el) {
-    el.classList.add('hidden');
-  }
-
-  // ---------------- 模拟与规则 ----------------
-
-  function createSim() {
-    var board = [];
-    for (var r = 0; r < SIZE; r++) {
-      var row = [];
-      for (var c = 0; c < SIZE; c++) row.push(0);
-      board.push(row);
-    }
-    return {
-      board: board,
-      current: 1,
-      winner: 0,
-      winLine: null,
-      lastMove: null,
-      moves: 0
-    };
-  }
-
-  function analyzeMove(board, r, c, p) {
-    var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-    var patterns = [];
-    for (var d = 0; d < 4; d++) {
-      var dr = dirs[d][0];
-      var dc = dirs[d][1];
-      var len = 1;
-      for (var rr = r + dr, cc = c + dc; inB(rr, cc) && board[rr][cc] === p; rr += dr, cc += dc) len++;
-      for (var rr = r - dr, cc = c - dc; inB(rr, cc) && board[rr][cc] === p; rr -= dr, cc -= dc) len++;
-      var e1 = inB(r + dr, c + dc) && board[r + dr][c + dc] === 0 ? 1 : 0;
-      var e2 = inB(r - dr, c - dc) && board[r - dr][c - dc] === 0 ? 1 : 0;
-      patterns.push({ dir: d, len: len, open: e1 + e2 });
-    }
-    var five = patterns.find(function (x) { return x.len >= 5; });
-    if (five) {
-      return { tier: 6, len: five.len, open: five.open, dir: five.dir, patterns: patterns, strong: 1 };
-    }
-    var maxTier = 0;
-    var maxLen = 0;
-    var maxOpen = 0;
-    var maxDir = 0;
-    for (var i = 0; i < patterns.length; i++) {
-      var ptn = patterns[i];
-      var tier = 0;
-      if (ptn.len === 4) tier = ptn.open >= 1 ? 4 : 0;
-      else if (ptn.len === 3) tier = ptn.open === 2 ? 3 : ptn.open === 1 ? 2 : 0;
-      else if (ptn.len === 2 && ptn.open >= 1) tier = 1;
-      if (tier > maxTier) {
-        maxTier = tier;
-        maxLen = ptn.len;
-        maxOpen = ptn.open;
-        maxDir = ptn.dir;
-      }
-    }
-    var strong = patterns.filter(function (x) { return x.len >= 3 && x.open >= 1; }).length;
-    if (strong >= 2 && maxTier >= 3) maxTier = 5;
-    return { tier: maxTier, len: maxLen, open: maxOpen, dir: maxDir, patterns: patterns, strong: strong };
-  }
-
-  function findWinLine(board, r, c, p) {
-    var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-    for (var d = 0; d < 4; d++) {
-      var dr = dirs[d][0];
-      var dc = dirs[d][1];
-      var len = 1;
-      for (var rr = r + dr, cc = c + dc; inB(rr, cc) && board[rr][cc] === p; rr += dr, cc += dc) len++;
-      for (var rr = r - dr, cc = c - dc; inB(rr, cc) && board[rr][cc] === p; rr -= dr, cc -= dc) len++;
-      if (len >= 5) {
-        var r1 = r;
-        var c1 = c;
-        while (inB(r1 - dr, c1 - dc) && board[r1 - dr][c1 - dc] === p) {
-          r1 -= dr;
-          c1 -= dc;
-        }
-        var r2 = r;
-        var c2 = c;
-        while (inB(r2 + dr, c2 + dc) && board[r2 + dr][c2 + dc] === p) {
-          r2 += dr;
-          c2 += dc;
-        }
-        return { r1: r1, c1: c1, r2: r2, c2: c2 };
-      }
-    }
-    return null;
-  }
-
-  function isBreakingMove(board, r, c, opp) {
-    var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-    var best = 0;
-    for (var d = 0; d < 4; d++) {
-      var dr = dirs[d][0];
-      var dc = dirs[d][1];
-      var a = 0;
-      var rr = r + dr;
-      var cc = c + dc;
-      while (inB(rr, cc) && board[rr][cc] === opp) {
-        a++;
-        rr += dr;
-        cc += dc;
-      }
-      var openA = inB(rr, cc) && board[rr][cc] === 0;
-      var b = 0;
-      rr = r - dr;
-      cc = c - dc;
-      while (inB(rr, cc) && board[rr][cc] === opp) {
-        b++;
-        rr -= dr;
-        cc -= dc;
-      }
-      var openB = inB(rr, cc) && board[rr][cc] === 0;
-      var total = a + b;
-      var tier = 0;
-      if (total >= 5) tier = 5;
-      else if (total === 4 && (openA || openB)) tier = 4;
-      else if (total === 3 && openA && openB) tier = 3;
-      if (tier > best) best = tier;
-    }
-    return best;
-  }
-
-  function luminance(hex) {
-    var h = hex.replace('#', '');
-    var r = parseInt(h.slice(0, 2), 16);
-    var g = parseInt(h.slice(2, 4), 16);
-    var b = parseInt(h.slice(4, 6), 16);
-    return 0.299 * r + 0.587 * g + 0.114 * b;
-  }
-
-  // ---------------- 棋盘几何 ----------------
+  // ---------------- 棋盘几何（带缓存） ----------------
 
   function boardGeom() {
+    if (geomCache && geomCache.w === W && geomCache.h === H && geomCache.size === SIZE) return geomCache;
     var pad = Math.max(22, Math.min(W, H) * 0.04);
     var side = Math.min(W, H) * 0.78;
     var cell = Math.max(9, (side - pad * 2) / (SIZE - 1));
     var ox = (W - side) / 2;
     var oy = (H - side) / 2;
-    return { pad: pad, side: side, cell: cell, ox: ox, oy: oy };
+    geomCache = { pad: pad, side: side, cell: cell, ox: ox, oy: oy, w: W, h: H, size: SIZE };
+    return geomCache;
   }
 
   function ix(c) {
@@ -242,7 +127,102 @@
     ctx.closePath();
   }
 
+  function luminance(hex) {
+    var h = hex.replace('#', '');
+    var r = parseInt(h.slice(0, 2), 16);
+    var g = parseInt(h.slice(2, 4), 16);
+    var b = parseInt(h.slice(4, 6), 16);
+    return 0.299 * r + 0.587 * g + 0.114 * b;
+  }
+
+  // ---------------- 棋形分析（仅用于特效/文案，不参与胜负） ----------------
+
+  function analyzeMove(board, r, c, p) {
+    var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    var patterns = [];
+    for (var d = 0; d < 4; d++) {
+      var dr = dirs[d][0];
+      var dc = dirs[d][1];
+      var len = 1;
+      for (var rr = r + dr, cc = c + dc; inB(rr, cc) && board[rr][cc] === p; rr += dr, cc += dc) len++;
+      for (var rr2 = r - dr, cc2 = c - dc; inB(rr2, cc2) && board[rr2][cc2] === p; rr2 -= dr, cc2 -= dc) len++;
+      var e1 = inB(r + dr, c + dc) && board[r + dr][c + dc] === 0 ? 1 : 0;
+      var e2 = inB(r - dr, c - dc) && board[r - dr][c - dc] === 0 ? 1 : 0;
+      patterns.push({ dir: d, len: len, open: e1 + e2 });
+    }
+    var five = null;
+    for (var fi = 0; fi < patterns.length; fi++) {
+      if (patterns[fi].len >= 5) { five = patterns[fi]; break; }
+    }
+    if (five) return { tier: 6, len: five.len, open: five.open, dir: five.dir, patterns: patterns, strong: 1 };
+    var maxTier = 0;
+    var maxLen = 0;
+    var maxOpen = 0;
+    var maxDir = 0;
+    for (var i = 0; i < patterns.length; i++) {
+      var ptn = patterns[i];
+      var tier = 0;
+      if (ptn.len === 4) tier = ptn.open >= 1 ? 4 : 0;
+      else if (ptn.len === 3) tier = ptn.open === 2 ? 3 : ptn.open === 1 ? 2 : 0;
+      else if (ptn.len === 2 && ptn.open >= 1) tier = 1;
+      if (tier > maxTier) {
+        maxTier = tier;
+        maxLen = ptn.len;
+        maxOpen = ptn.open;
+        maxDir = ptn.dir;
+      }
+    }
+    var strong = 0;
+    for (var si = 0; si < patterns.length; si++) {
+      if (patterns[si].len >= 3 && patterns[si].open >= 1) strong++;
+    }
+    if (strong >= 2 && maxTier >= 3) maxTier = 5;
+    return { tier: maxTier, len: maxLen, open: maxOpen, dir: maxDir, patterns: patterns, strong: strong };
+  }
+
+  function findWinLine(board, r, c, p) {
+    var wl = Rules.winLine(board, SIZE, r, c, p);
+    return wl ? { r1: wl.r1, c1: wl.c1, r2: wl.r2, c2: wl.c2 } : null;
+  }
+
+  function isBreakingMove(board, r, c, opp) {
+    var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
+    var best = 0;
+    for (var d = 0; d < 4; d++) {
+      var dr = dirs[d][0];
+      var dc = dirs[d][1];
+      var a = 0;
+      var rr = r + dr;
+      var cc = c + dc;
+      while (inB(rr, cc) && board[rr][cc] === opp) { a++; rr += dr; cc += dc; }
+      var openA = inB(rr, cc) && board[rr][cc] === 0;
+      var b = 0;
+      rr = r - dr;
+      cc = c - dc;
+      while (inB(rr, cc) && board[rr][cc] === opp) { b++; rr -= dr; cc -= dc; }
+      var openB = inB(rr, cc) && board[rr][cc] === 0;
+      var total = a + b;
+      var tier = 0;
+      if (total >= 5) tier = 5;
+      else if (total === 4 && (openA || openB)) tier = 4;
+      else if (total === 3 && openA && openB) tier = 3;
+      if (tier > best) best = tier;
+    }
+    return best;
+  }
+
   // ---------------- 对局控制 ----------------
+
+  function createSim() {
+    return {
+      board: Rules.makeBoard(SIZE),
+      current: 1,
+      winner: 0,
+      winLine: null,
+      lastMove: null,
+      moves: 0
+    };
+  }
 
   function startGame(settings) {
     if (game && game.aiTimer) clearTimeout(game.aiTimer);
@@ -251,6 +231,11 @@
     if ([9, 11, 13, 15, 19].indexOf(SIZE) < 0) SIZE = 15;
     window.GC.SIZE = SIZE;
     window.GC.STARS = window.GC.starsFor(SIZE);
+    geomCache = null;
+
+    var humanColor = 1;
+    if (settings.mode === 'ai') humanColor = settings.humanSide === 0 ? 1 : 2;
+
     game = {
       settings: settings,
       sim: createSim(),
@@ -261,20 +246,30 @@
       aiThinking: false,
       aiTimer: null,
       ghost: null,
+      cursor: { r: Math.floor((SIZE - 1) / 2), c: Math.floor((SIZE - 1) / 2) },
       switching: null,
       ambient: null,
       rule: settings.rule || (settings.renju ? 'renju' : (window.GC.settings && window.GC.settings.rule) || 'free'),
       renjuLoss: false,
       myColor: (settings.mode === 'online') ? settings.myColor : 0,
+      humanColor: humanColor,
       isMyTurn: (settings.mode === 'online') ? settings.myColor === 1 : true,
       onlineActive: (settings.mode === 'online') || false,
       onlineEnded: false,
+      awaitingResult: false,
+      lastLocalMove: null,
+      endReason: '',
       rematchRequested: false,
-      rematchReceived: false
+      rematchReceived: false,
+      history: [],
+      turnSeconds: settings.turnSeconds || 30,
+      clock: { remaining: settings.turnSeconds || 30 },
+      hint: null,
+      _spriteKey: null,
+      _sprite: null
     };
-    game.aiPlayer = settings && settings.mode === 'ai'
-      ? (settings.humanSide === 0 ? 2 : 1)
-      : 0;
+    game.aiPlayer = settings && settings.mode === 'ai' ? (settings.humanSide === 0 ? 2 : 1) : 0;
+
     if (game.onlineActive) {
       var onlineNick = settings.myNickname || '你';
       var oppNick = settings.opponentNickname || '对手';
@@ -282,43 +277,54 @@
         game.myColor === 1 ? onlineNick : oppNick,
         game.myColor === 2 ? onlineNick : oppNick
       ];
+    } else if (settings.mode === 'ai') {
+      var humanName = settings.humanSide === 0 ? '你' : 'AI';
+      var aiName = settings.humanSide === 0 ? 'AI' : '你';
+      GC.PLAYER_NAMES = [humanName, aiName];
     } else {
       GC.PLAYER_NAMES = ['黑方', '白方'];
     }
+
     applyThemeLight();
     window.FX.clear();
+    window.FX.syncIntensity();
     window.PS.clear();
     game.ambient = window.Theme.createAmbient(game.theme, window.PS, W, H);
     activeAmbient = game.ambient;
     scene = 'game';
     hide(els.cover);
-    hide(els.winOverlay);
+    closeDialog(els.winOverlay);
     show(els.hud);
+    els.btnUndo.classList.toggle('hidden', game.onlineActive);
+    els.btnHint.classList.toggle('hidden', game.onlineActive);
+    if (game.onlineActive) {
+      show(els.connChip);
+      updateConnChip();
+    } else {
+      hide(els.connChip);
+    }
     refreshAutoChip();
     updateHud();
     if (game.aiPlayer && game.sim.current === game.aiPlayer) scheduleAi();
   }
 
   function backToMenu() {
-    if (game && game.onlineActive && !game.onlineEnded) {
-      window.Network.sendGameEnd('abort');
-      window.Network.leaveRoom();
-    }
-    if (game && game.onlineActive && game.onlineEnded) {
-      // game ended but we're leaving — just leave room
+    if (game && game.onlineActive) {
+      if (!game.onlineEnded) window.Network.sendAbort();
       window.Network.leaveRoom();
     }
     if (game && game.aiTimer) clearTimeout(game.aiTimer);
     game = null;
     scene = 'cover';
     GC.PLAYER_NAMES = ['黑方', '白方'];
+    closeDialog(els.winOverlay);
+    window.FX.clear();
     if (cover) {
       window.PS.clear();
       cover.ambient = window.Theme.createAmbient(cover.theme, window.PS, W, H);
     }
     activeAmbient = cover ? cover.ambient : null;
     hide(els.hud);
-    hide(els.winOverlay);
     show(els.cover);
     window.Cover.show();
   }
@@ -335,120 +341,145 @@
       myColor: color,
       myNickname: myNick,
       opponentNickname: oppNick || '对手',
-      roomCode: session ? session.code : null
+      roomCode: session ? session.code : null,
+      turnSeconds: state.turnSeconds || 30
     });
-    game.sim.board = [];
-    for (var r = 0; r < SIZE; r++) game.sim.board.push(state.board[r].slice());
+    var next = [];
+    for (var r = 0; r < SIZE; r++) next.push(state.board[r].slice());
+    game.sim.board = next;
     game.sim.current = state.currentTurn || 1;
     game.sim.winner = state.winner || 0;
     game.sim.lastMove = state.lastMove || null;
     game.sim.moves = state.moveCount || 0;
     game.onlineEnded = !!state.gameOver;
+    game.awaitingResult = !!state.gameOver;
+    game.endReason = state.reason || '';
+    game.clock.remaining = state.remaining != null ? state.remaining : 30;
     game.isMyTurn = !game.onlineEnded && game.sim.current === color;
     updateHud();
-    if (game.sim.winner) {
-      game.sim.winLine = game.sim.lastMove
-        ? findWinLine(game.sim.board, game.sim.lastMove.r, game.sim.lastMove.c, game.sim.winner)
-        : null;
-      handleWin(game.sim.winner);
+    if (state.gameOver && state.winner) {
+      game.sim.winLine = state.lastMove ? findWinLine(game.sim.board, state.lastMove.r, state.lastMove.c, state.winner) : null;
+      handleWin(state.winner, state.reason || 'five');
+    } else if (state.gameOver && state.draw) {
+      handleDraw();
     }
+  }
+
+  function isMyTurnNow() {
+    if (!game) return false;
+    if (!game.onlineActive) return true;
+    return game.sim.current === game.myColor;
   }
 
   function canPlace() {
     if (!game || scene !== 'game' || game.sim.winner || game.switching) return false;
-    if (game.onlineActive && !game.isMyTurn) return false;
+    if (game.awaitingResult || game.onlineEnded) return false;
+    if (game.onlineActive && !isMyTurnNow()) return false;
     if (game.aiThinking) return false;
     if (game.aiPlayer && game.sim.current === game.aiPlayer) return false;
     return true;
   }
 
   function placeMove(r, c) {
+    if (!game) return;
     var sim = game.sim;
     var p = sim.current;
-    if (game.rule !== 'free' && p === 1 && window.AI.isForbiddenAfter(sim.board, r, c, 1, game.rule)) {
-      game.renjuLoss = true;
-      sim.winner = 2;
-      sim.lastMove = { r: r, c: c };
-      window.FX.toast('黑方禁手 · 白方获胜', W / 2, H / 2, '#ff6b6b', false);
-      window.SFX.counter(5);
-      handleWin(2);
+    var verdict = Rules.judge(sim.board, SIZE, game.rule, r, c, p);
+
+    if (!verdict.ok) {
+      if (verdict.forbidden) {
+        if (game.onlineActive) {
+          // 交给服务端裁决，客户端只提示
+          window.Network.sendMove(r, c);
+          window.SFX.illegal();
+          window.FX.toast('禁手，等待服务端裁决…', ix(c), iy(r) - 30, '#ff6b6b', true);
+          return;
+        }
+        game.renjuLoss = true;
+        sim.winner = 2;
+        sim.lastMove = { r: r, c: c };
+        window.FX.toast('黑方禁手 · 白方获胜', W / 2, H / 2, '#ff6b6b', false);
+        window.SFX.counter(5);
+        handleWin(2, 'forbidden');
+      } else {
+        window.SFX.illegal();
+      }
       return;
     }
-    sim.board[r][c] = p;
+
+    // rules.judge 已把棋子放上棋盘
     sim.moves++;
     sim.lastMove = { r: r, c: c };
+    game.history.push({ r: r, c: c, color: p });
     game.stoneAnims.push({ r: r, c: c, t0: time });
-    window.SFX.place();
+    window.SFX.place(p);
     var info = analyzeMove(sim.board, r, c, p);
     triggerCombo(info, r, c, p);
-    if (info.tier === 6) {
-      sim.winner = p;
+
+    if (game.onlineActive) {
+      game.lastLocalMove = { r: r, c: c };
+      window.Network.sendMove(r, c);
+      if (verdict.win || verdict.draw) {
+        game.awaitingResult = true;
+      } else {
+        sim.current = 3 - p;
+        game.isMyTurn = (sim.current === game.myColor);
+      }
+      updateHud();
+      return;
+    }
+
+    if (verdict.win) {
       sim.winLine = findWinLine(sim.board, r, c, p);
-      handleWin(p);
+      handleWin(p, 'five');
+      return;
+    }
+    if (verdict.draw) {
+      handleDraw();
       return;
     }
     sim.current = 3 - p;
-    if (game.onlineActive) {
-      game.isMyTurn = (sim.current === game.myColor);
-      if (!game.onlineEnded) {
-        window.Network.sendMove(r, c);
-      }
-    }
     updateHud();
     if (game.aiPlayer && sim.current === game.aiPlayer) scheduleAi();
   }
 
-  function placeRemoteMove(r, c) {
+  function placeRemoteMove(r, c, color) {
     if (!game || game.sim.winner || game.switching) return;
     var sim = game.sim;
-    if (sim.board[r][c] !== 0) return;
-    var p = sim.current;
-    if (game.rule !== 'free' && p === 1 && window.AI.isForbiddenAfter(sim.board, r, c, 1, game.rule)) {
-      game.renjuLoss = true;
-      sim.winner = 2;
-      sim.lastMove = { r: r, c: c };
-      window.FX.toast('黑方禁手 · 白方获胜', W / 2, H / 2, '#ff6b6b', false);
-      handleWin(2);
+    if (!inB(r, c) || sim.board[r][c] !== 0) return;
+    var p = color || sim.current;
+    var verdict = Rules.judge(sim.board, SIZE, game.rule, r, c, p);
+    if (!verdict.ok) {
+      // 与服务端状态不一致：请求一次重连同步
+      window.Network.rejoinRoom((window.Network.getSession() || {}).code, (window.Network.getSession() || {}).token);
       return;
     }
-    sim.board[r][c] = p;
+
     sim.moves++;
     sim.lastMove = { r: r, c: c };
+    game.history.push({ r: r, c: c, color: p });
     game.stoneAnims.push({ r: r, c: c, t0: time });
-    window.SFX.place();
+    window.SFX.place(p);
     var info = analyzeMove(sim.board, r, c, p);
     triggerCombo(info, r, c, p);
-    if (info.tier === 6) {
-      sim.winner = p;
-      sim.winLine = findWinLine(sim.board, r, c, p);
-      handleWin(p);
-      return;
-    }
-    sim.current = 3 - p;
-    if (game.onlineActive) {
+
+    if (verdict.win || verdict.draw) {
+      game.awaitingResult = true;
+    } else {
+      sim.current = 3 - p;
       game.isMyTurn = (sim.current === game.myColor);
+      if (game.isMyTurn) window.SFX.turn();
     }
     updateHud();
   }
 
-  function handleOnlineWin(winnerColor) {
-    if (!game || game.onlineEnded) return;
-    game.onlineEnded = true;
-    var winnerName = winnerColor === game.myColor ? '你' : '对手';
-    if (winnerName === '你') {
-      window.Network.sendGameEnd(game.myColor);
-    } else {
-      var oppColor = game.myColor === 1 ? 2 : 1;
-      window.Network.sendGameEnd(oppColor);
-    }
-  }
-
   function scheduleAi() {
+    if (!game) return;
     if (game.aiTimer) clearTimeout(game.aiTimer);
     game.aiThinking = true;
     updateHud();
     var g = game;
-    var delay = 160 + Math.random() * 240;
+    var delay = 140 + Math.random() * 220;
     game.aiTimer = setTimeout(function () {
       if (!g || game !== g || scene !== 'game' || g.sim.winner) return;
       var done = function (move) {
@@ -503,12 +534,7 @@
     if (tier >= 2) {
       window.Theme.playThemeFx(th, 'move', tier, px, py, colors);
       window.SFX.effect(tier);
-      var labels = {
-        2: '流星三连',
-        3: '彗星活三',
-        4: '雷暴四连',
-        5: '双线新星'
-      };
+      var labels = { 2: '流星三连', 3: '彗星活三', 4: '雷暴四连', 5: '双线新星' };
       window.FX.toast(labels[tier], px, py - 34, tier >= 4 ? th.accent2 : th.accent, tier <= 2);
       gain = Math.max(gain, tier);
       if (Math.random() < 0.18) {
@@ -533,28 +559,60 @@
     updateCombo();
   }
 
-  function handleWin(p) {
-    var name = p === 1 ? GC.PLAYER_NAMES[0] : GC.PLAYER_NAMES[1];
+  function reasonLabel(reason) {
+    if (reason === 'forbidden') return '黑方禁手';
+    if (reason === 'timeout') return '对手超时';
+    if (reason === 'leave') return '对手离开';
+    if (reason === 'disconnect') return '对手掉线';
+    if (reason === 'draw') return '棋盘已满';
+    return '五连珠';
+  }
+
+  function handleWin(p, reason) {
+    if (!game || game._winShown) return;
+    game._winShown = true;
     var sim = game.sim;
-    var last = sim.lastMove;
+    var name = p === 1 ? GC.PLAYER_NAMES[0] : GC.PLAYER_NAMES[1];
+    var lastMove = sim.lastMove;
+    var myWin = !game.onlineActive || p === game.myColor;
+
     updateHud();
-    window.SFX.win();
-    if (game.onlineActive) {
-      handleOnlineWin(p);
+
+    if (game.onlineActive && game.myColor) {
+      if (myWin) window.SFX.win();
+      else window.SFX.lose();
+    } else {
+      window.SFX.win();
     }
-    if (!GC.PREFERS_REDUCED_MOTION) window.FX.setSlowmo(0.35, 1200);
-    window.FX.flash('#ffffff', 0.4, 0.5);
-    window.FX.shake(14, 0.7);
-    window.FX.pulseZoom(1, 1.08, 0.6);
-    var toastText = game.renjuLoss ? '黑方禁手 · 白方获胜' : '五连珠 · ' + name + '胜';
-    window.FX.toast(toastText, last ? ix(last.c) : W / 2, last ? iy(last.r) - 44 : H / 2, '#ffd66e', false);
-    window.FX.fireworks(W * 0.5, H * 0.38);
+
+    if (!GC.PREFERS_REDUCED_MOTION && game.theme) {
+      window.FX.setSlowmo(0.35, 1200);
+      window.FX.flash('#ffffff', 0.4, 0.5);
+      window.FX.shake(14, 0.7);
+      window.FX.pulseZoom(1, 1.08, 0.6);
+      window.FX.fireworks(W * 0.5, H * 0.38);
+    }
+    var toastText = reason === 'forbidden' ? '黑方禁手 · 白方获胜' : '五连珠 · ' + name + '胜';
+    window.FX.toast(toastText, lastMove ? ix(lastMove.c) : W / 2, lastMove ? iy(lastMove.r) - 44 : H / 2, '#ffd66e', false);
+    announce(name + '获胜，' + reasonLabel(reason));
+
+    if (!game.onlineActive && game.settings.mode === 'ai') {
+      var outcome = p === game.humanColor ? 'win' : 'loss';
+      GC.recordLocalResult(outcome, sim.moves, game.combo.best);
+    }
+
     var g = game;
     setTimeout(function () {
       if (!g || game !== g || scene !== 'game') return;
-      els.winTitle.textContent = name + '获胜';
-      els.winMeta.textContent = (g.renjuLoss ? '黑方禁手 · ' : '') + '最长特效连击 ×' + g.combo.best + ' · 共 ' + sim.moves + ' 手';
-      els.winEmblem.textContent = (g.onlineActive && p === g.myColor) ? '🏆' : (g.onlineActive && p !== g.myColor) ? '💔' : '🏆';
+      var comboMeta = ' · 最长特效连击 ×' + g.combo.best + ' · 共 ' + sim.moves + ' 手';
+      if (g.onlineActive && g.myColor) {
+        els.winTitle.textContent = myWin ? '你获胜' : '你落败';
+        els.winMeta.textContent = (myWin ? '' : name + ' 获胜 · ') + reasonLabel(reason) + comboMeta;
+      } else {
+        els.winTitle.textContent = name + '获胜';
+        els.winMeta.textContent = reasonLabel(reason) + comboMeta;
+      }
+      els.winEmblem.textContent = game.onlineActive ? (myWin ? '🏆' : '💔') : '🏆';
       if (g.onlineActive) {
         showOnlineWinControls();
       } else {
@@ -562,13 +620,39 @@
         show(els.winNormalActions);
       }
       hide(els.hud);
-      show(els.winOverlay);
-    }, 1250);
+      openDialog(els.winOverlay);
+    }, 1100);
+  }
+
+  function handleDraw() {
+    if (!game) return;
+    if (game._winShown) return;
+    game._winShown = true;
+    game.sim.winner = 0;
+    window.SFX.draw();
+    window.FX.toast('和棋 · 棋盘已满', W / 2, H / 2, '#ffd66e', false);
+    announce('和棋，棋盘已满');
+    if (!game.onlineActive && game.settings.mode === 'ai') {
+      GC.recordLocalResult('draw', game.sim.moves, game.combo.best);
+    }
+    var g = game;
+    setTimeout(function () {
+      if (!g || game !== g || scene !== 'game') return;
+      els.winTitle.textContent = '和棋';
+      els.winMeta.textContent = reasonLabel('draw') + ' · 共 ' + g.sim.moves + ' 手';
+      els.winEmblem.textContent = '🤝';
+      if (g.onlineActive) showOnlineWinControls();
+      else {
+        hide(els.winRematchArea);
+        show(els.winNormalActions);
+      }
+      hide(els.hud);
+      openDialog(els.winOverlay);
+    }, 900);
   }
 
   function showOnlineWinControls() {
     hide(els.winNormalActions);
-    hide(els.winRematchArea);
     show(els.winRematchArea);
     if (game.rematchReceived) {
       els.winRematchStatus.textContent = '对手请求再战！';
@@ -576,62 +660,26 @@
       els.btnRematch.onclick = function () {
         window.SFX.click();
         window.Network.acceptRematch();
-        game.onlineEnded = false;
         game.rematchRequested = false;
         game.rematchReceived = false;
       };
       show(els.btnRematch);
     } else if (game.rematchRequested) {
-      els.winRematchStatus.textContent = '已发送再战请求，等待对方...';
+      els.winRematchStatus.textContent = '已发送再战请求，等待对方…';
       hide(els.btnRematch);
     } else {
       els.winRematchStatus.textContent = '';
       els.btnRematch.textContent = '请求再战';
       els.btnRematch.onclick = function () {
         window.SFX.click();
+        window.Network.acceptRematch();   // 登记自己的票
+        window.Network.requestRematch();  // 通知对手
         game.rematchRequested = true;
-        window.Network.requestRematch();
-        els.winRematchStatus.textContent = '已发送再战请求，等待对方...';
+        els.winRematchStatus.textContent = '已发送再战请求，等待对方…';
         hide(els.btnRematch);
       };
       show(els.btnRematch);
     }
-    // always show back button inside rematch area
-    var backBtn = els.winRematchArea.querySelector('.ghost-btn');
-    if (!backBtn) {
-      backBtn = document.createElement('button');
-      backBtn.className = 'ghost-btn';
-      backBtn.textContent = '返回菜单';
-      backBtn.addEventListener('click', function () {
-        window.SFX.click();
-        backToMenu();
-      });
-      els.winRematchArea.appendChild(backBtn);
-    }
-  }
-
-  function handleForfeitWin() {
-    // opponent disconnected during game — we win
-    if (!game || game.onlineEnded) return;
-    game.onlineEnded = true;
-    game.sim.winner = game.myColor;
-    window.SFX.win();
-    window.FX.flash('#ffffff', 0.4, 0.5);
-    window.FX.shake(14, 0.7);
-    window.FX.toast('对手已离开 · 你获胜', W / 2, H / 2, '#ffd66e', false);
-    window.FX.fireworks(W * 0.5, H * 0.38);
-    var g = game;
-    setTimeout(function () {
-      if (!g || game !== g || scene !== 'game') return;
-      var myName = g.myColor === 1 ? GC.PLAYER_NAMES[0] : GC.PLAYER_NAMES[1];
-      els.winTitle.textContent = myName + '获胜';
-      els.winMeta.textContent = '对手离开 · 共 ' + g.sim.moves + ' 手';
-      els.winEmblem.textContent = '🏆';
-      hide(els.winNormalActions);
-      showOnlineWinControls();
-      hide(els.hud);
-      show(els.winOverlay);
-    }, 1000);
   }
 
   function updateHud() {
@@ -642,16 +690,28 @@
     if (thinking) {
       label = 'AI 思考中…';
     } else if (sim.winner) {
-      label = sim.winner === 1 ? GC.PLAYER_NAMES[0] + '胜' : GC.PLAYER_NAMES[1] + '胜';
-    } else if (game.onlineActive && !game.isMyTurn) {
+      label = (sim.winner === 1 ? GC.PLAYER_NAMES[0] : GC.PLAYER_NAMES[1]) + '胜';
+    } else if (game.onlineActive && !isMyTurnNow()) {
       label = '等待对手…';
+    } else if (game.awaitingResult && game.onlineActive) {
+      label = '结算中…';
     } else {
       label = (sim.current === 1 ? GC.PLAYER_NAMES[0] : GC.PLAYER_NAMES[1]) + '回合';
     }
+    if (game.onlineActive && !sim.winner && game.clock) {
+      label += ' · ' + game.clock.remaining + 's';
+    }
     els.turnChip.textContent = label;
-    els.turnChip.classList.toggle('thinking', !!thinking || (game.onlineActive && !game.isMyTurn && !sim.winner));
+    els.turnChip.classList.toggle('thinking', !!thinking || (game.onlineActive && !isMyTurnNow() && !sim.winner));
+    els.turnChip.classList.toggle('urgent', game.onlineActive && !sim.winner && game.clock && game.clock.remaining <= 5);
     els.themeChip.textContent = game.theme.name + ' · ' + game.theme.tagline;
     updateCombo();
+    // 便于自动化/客服排查的只读状态（不参与逻辑）
+    document.body.dataset.turn = String(sim.current);
+    document.body.dataset.moves = String(sim.moves);
+    document.body.dataset.winner = String(sim.winner || 0);
+    document.body.dataset.myColor = String(game.myColor || 0);
+    document.body.dataset.scene = scene;
   }
 
   function updateCombo() {
@@ -664,6 +724,69 @@
     }
   }
 
+  function updateConnChip() {
+    if (!els.connChip) return;
+    var ok = window.Network && window.Network.isConnected && window.Network.isConnected();
+    els.connChip.textContent = ok ? '已连接' : '重连中…';
+    els.connChip.classList.toggle('offline', !ok);
+  }
+
+  // ---------------- 悔棋 / 提示 ----------------
+
+  function undoMove() {
+    if (!game) return;
+    if (game.onlineActive) {
+      window.FX.toast('在线对局不支持悔棋', W / 2, H / 2, '#ffd66e', true);
+      return;
+    }
+    if (game.aiTimer) clearTimeout(game.aiTimer);
+    game.aiThinking = false;
+    if (!game.history.length) {
+      window.FX.toast('没有可悔的棋', W / 2, H / 2, '#ffd66e', true);
+      return;
+    }
+    var pops = 1;
+    if (game.aiPlayer) {
+      // 若轮到 AI，撤销自己的一手；否则撤销 AI + 自己各一手
+      pops = game.sim.current === game.aiPlayer ? 1 : 2;
+    }
+    for (var i = 0; i < pops; i++) {
+      var last = game.history.pop();
+      if (!last) break;
+      game.sim.board[last.r][last.c] = 0;
+      game.sim.moves = Math.max(0, game.sim.moves - 1);
+    }
+    game.sim.current = game.sim.moves % 2 === 0 ? 1 : 2;
+    game.sim.lastMove = game.history.length ? game.history[game.history.length - 1] : null;
+    game.sim.winner = 0;
+    game.sim.winLine = null;
+    game.renjuLoss = false;
+    game.awaitingResult = false;
+    game._winShown = false;
+    game.combo.streak = 0;
+    game.stoneAnims = [];
+    closeDialog(els.winOverlay);
+    show(els.hud);
+    window.SFX.click();
+    updateHud();
+    if (game.aiPlayer && game.sim.current === game.aiPlayer) scheduleAi();
+  }
+
+  function hintMove() {
+    if (!game || game.sim.winner) return;
+    if (game.onlineActive) {
+      window.FX.toast('在线对局不支持提示', W / 2, H / 2, '#ffd66e', true);
+      return;
+    }
+    if (game.aiThinking || !canPlace()) return;
+    var move = window.AI.chooseMoveQuick(game.sim.board, game.sim.current, game.rule);
+    if (!move) return;
+    game.hint = { r: move.r, c: move.c, until: performance.now() + 3000 };
+    var col = String.fromCharCode(65 + move.c);
+    window.FX.toast('提示 ' + col + (move.r + 1), ix(move.c), iy(move.r) - 34, '#7dffb0', true);
+    window.SFX.effect(1);
+  }
+
   // ---------------- 场景切换 ----------------
 
   function switchTheme() {
@@ -674,6 +797,8 @@
     snap.getContext('2d').drawImage(canvas, 0, 0);
     var next = window.Theme.random(game.theme.id);
     game.theme = next;
+    game._spriteKey = null;
+    game._sprite = null;
     window.PS.clear();
     game.ambient = window.Theme.createAmbient(next, window.PS, W, H);
     activeAmbient = game.ambient;
@@ -740,38 +865,78 @@
     ctx.restore();
   }
 
-  // ---------------- 绘制 ----------------
+  // ---------------- 棋子 sprite 缓存 ----------------
 
-  function drawPiece(x, y, p, scale, alpha) {
-    var st = game.theme.pieces[p === 1 ? 0 : 1];
-    var r = boardGeom().cell * 0.42 * scale;
-    ctx.save();
-    ctx.globalAlpha = alpha !== undefined ? alpha : 1;
-    ctx.fillStyle = 'rgba(0,0,0,0.32)';
-    ctx.beginPath();
-    ctx.ellipse(x + r * 0.14, y + r * 0.16, r * 0.94, r * 0.5, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowColor = st.glow;
-    ctx.shadowBlur = 16 * scale + 6;
-    var grad = ctx.createRadialGradient(x - r * 0.35, y - r * 0.42, r * 0.08, x, y, r);
+  function buildSprite(p) {
+    var th = game.theme;
+    var cell = boardGeom().cell;
+    var r = cell * 0.42;
+    var half = r + 28;
+    var dpr = Math.min(2, DPR);
+    var canvasSize = Math.ceil(half * 2 * dpr);
+    var c = document.createElement('canvas');
+    c.width = canvasSize;
+    c.height = canvasSize;
+    var x = c.getContext('2d');
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var st = th.pieces[p === 1 ? 0 : 1];
+
+    x.save();
+    x.fillStyle = 'rgba(0,0,0,0.32)';
+    x.beginPath();
+    x.ellipse(half + r * 0.14, half + r * 0.16, r * 0.94, r * 0.5, 0, 0, Math.PI * 2);
+    x.fill();
+
+    x.shadowColor = st.glow;
+    x.shadowBlur = 18;
+    var grad = x.createRadialGradient(half - r * 0.35, half - r * 0.42, r * 0.08, half, half, r);
     grad.addColorStop(0, st.hi);
     grad.addColorStop(0.55, st.core);
     grad.addColorStop(0.97, st.edge);
     grad.addColorStop(1, st.edge);
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
+    x.fillStyle = grad;
+    x.beginPath();
+    x.arc(half, half, r, 0, Math.PI * 2);
+    x.fill();
+    x.shadowBlur = 0;
+
+    x.save();
+    x.translate(half, half);
+    window.Theme.drawMotif(th, x, r * 0.96, luminance(st.core) < 120);
+    x.restore();
+
+    x.strokeStyle = withAlpha(st.edge, 0.9);
+    x.lineWidth = Math.max(1, r * 0.06);
+    x.beginPath();
+    x.arc(half, half, r * 0.97, 0, Math.PI * 2);
+    x.stroke();
+    x.restore();
+
+    return { canvas: c, half: half };
+  }
+
+  function spriteFor(p) {
+    var g = boardGeom();
+    var key = game.theme.id + '|' + p + '|' + g.cell.toFixed(2) + '|' + Math.min(2, DPR);
+    if (game._spriteKey !== key || !game._sprite) {
+      game._spriteKey = key;
+      game._sprite = {};
+    }
+    if (!game._sprite[p]) game._sprite[p] = buildSprite(p);
+    return game._sprite[p];
+  }
+
+  function drawPiece(x, y, p, scale, alpha) {
+    var sp = spriteFor(p);
     ctx.save();
-    ctx.translate(x, y);
-    window.Theme.drawMotif(game.theme, ctx, r * 0.96, luminance(st.core) < 120);
-    ctx.restore();
-    ctx.strokeStyle = withAlpha(st.edge, 0.9);
-    ctx.lineWidth = Math.max(1, r * 0.06);
-    ctx.beginPath();
-    ctx.arc(x, y, r * 0.97, 0, Math.PI * 2);
-    ctx.stroke();
+    ctx.globalAlpha = alpha !== undefined ? alpha : 1;
+    if (scale === 1) {
+      ctx.drawImage(sp.canvas, x - sp.half, y - sp.half, sp.half * 2, sp.half * 2);
+    } else {
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.drawImage(sp.canvas, -sp.half, -sp.half, sp.half * 2, sp.half * 2);
+    }
     ctx.restore();
   }
 
@@ -824,11 +989,11 @@
     ctx.strokeStyle = th.board.line;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
-    for (var i = 0; i < SIZE; i++) {
-      ctx.moveTo(ix(0), iy(i));
-      ctx.lineTo(ix(SIZE - 1), iy(i));
-      ctx.moveTo(ix(i), iy(0));
-      ctx.lineTo(ix(i), iy(SIZE - 1));
+    for (var li = 0; li < SIZE; li++) {
+      ctx.moveTo(ix(0), iy(li));
+      ctx.lineTo(ix(SIZE - 1), iy(li));
+      ctx.moveTo(ix(li), iy(0));
+      ctx.lineTo(ix(li), iy(SIZE - 1));
     }
     ctx.stroke();
 
@@ -865,6 +1030,29 @@
       ctx.arc(ix(sim.lastMove.c), iy(sim.lastMove.r), g.cell * 0.5, 0, Math.PI * 2);
       ctx.stroke();
       ctx.shadowBlur = 0;
+    }
+
+    if (game.hint && performance.now() < game.hint.until) {
+      var hx = ix(game.hint.c);
+      var hy = iy(game.hint.r);
+      ctx.strokeStyle = '#7dffb0';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath();
+      ctx.arc(hx, hy, g.cell * 0.55, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (game.hint) {
+      game.hint = null;
+    }
+
+    if (scene === 'game' && !game.onlineActive && canPlace() && game.cursor) {
+      var kx = ix(game.cursor.c);
+      var ky = iy(game.cursor.r);
+      ctx.strokeStyle = withAlpha(th.accent, 0.7);
+      ctx.lineWidth = 1.6;
+      roundRect(kx - g.cell * 0.45, ky - g.cell * 0.45, g.cell * 0.9, g.cell * 0.9, 5);
+      ctx.stroke();
     }
 
     if (sim.winner && sim.winLine) {
@@ -904,19 +1092,19 @@
     }
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    for (var i = 0; i < pts.length; i++) {
-      for (var j = i + 1; j < pts.length; j++) {
-        var dx = pts[i].x - pts[j].x;
-        var dy = pts[i].y - pts[j].y;
+    for (var a = 0; a < pts.length; a++) {
+      for (var b = a + 1; b < pts.length; b++) {
+        var dx = pts[a].x - pts[b].x;
+        var dy = pts[a].y - pts[b].y;
         var dist = Math.hypot(dx, dy);
         var maxD = Math.min(W, H) * 0.3;
         if (dist < maxD) {
-          ctx.globalAlpha = (1 - dist / maxD) * (0.12 + 0.08 * Math.sin(time * 0.8 + i + j));
+          ctx.globalAlpha = (1 - dist / maxD) * (0.12 + 0.08 * Math.sin(time * 0.8 + a + b));
           ctx.strokeStyle = '#7df9ff';
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(pts[i].x, pts[i].y);
-          ctx.lineTo(pts[j].x, pts[j].y);
+          ctx.moveTo(pts[a].x, pts[a].y);
+          ctx.lineTo(pts[b].x, pts[b].y);
           ctx.stroke();
         }
       }
@@ -1068,58 +1256,126 @@
   function setupOnlineListeners() {
     window.Network.on('opponentMove', function (data) {
       if (game && game.onlineActive && !game.onlineEnded) {
-        placeRemoteMove(data.r, data.c);
+        placeRemoteMove(data.r, data.c, data.color);
+      }
+    });
+
+    window.Network.on('gameOver', function (data) {
+      if (!game || !game.onlineActive || !data) return;
+      if (game._winShown) return;
+      var sim = game.sim;
+      if (data.board) {
+        var next = [];
+        for (var r = 0; r < SIZE; r++) next.push(data.board[r].slice());
+        sim.board = next;
+      }
+      if (data.lastMove) sim.lastMove = data.lastMove;
+      game.onlineEnded = true;
+      game.awaitingResult = false;
+      game.endReason = data.reason || 'five';
+      if (data.draw) {
+        window.SFX.draw();
+        handleDraw();
+        return;
+      }
+      sim.winner = data.winner;
+      sim.winLine = data.winLine ? { r1: data.winLine.r1, c1: data.winLine.c1, r2: data.winLine.r2, c2: data.winLine.c2 }
+        : (sim.lastMove ? findWinLine(sim.board, sim.lastMove.r, sim.lastMove.c, data.winner) : null);
+      if (sim.winner && !sim.winLine && sim.lastMove) {
+        sim.winLine = findWinLine(sim.board, sim.lastMove.r, sim.lastMove.c, sim.winner);
+      }
+      handleWin(sim.winner, game.endReason);
+    });
+
+    window.Network.on('moveRejected', function (data) {
+      if (!game || !game.onlineActive || !data) return;
+      var lm = game.lastLocalMove;
+      if (lm && lm.r === data.r && lm.c === data.c && game.sim.board[lm.r][lm.c] === game.myColor) {
+        game.sim.board[lm.r][lm.c] = 0;
+        game.sim.moves = Math.max(0, game.sim.moves - 1);
+        game.sim.current = game.myColor;
+        game.isMyTurn = true;
+        game.lastLocalMove = null;
+        game.stoneAnims = game.stoneAnims.filter(function (a) { return !(a.r === lm.r && a.c === lm.c); });
+        if (game.history.length && game.history[game.history.length - 1].r === lm.r && game.history[game.history.length - 1].c === lm.c) {
+          game.history.pop();
+        }
+      }
+      window.SFX.illegal();
+      window.FX.toast(data.reason || '落子被拒绝', W / 2, H / 2, '#ff6b6b', true);
+      updateHud();
+    });
+
+    window.Network.on('clock', function (data) {
+      if (!game || !game.onlineActive || !data) return;
+      game.clock.remaining = data.remaining;
+      if (data.currentTurn) game.sim.current = data.currentTurn;
+      if (!game.sim.winner && !game.onlineEnded) {
+        game.isMyTurn = game.sim.current === game.myColor;
+        if (data.remaining <= 5 && data.remaining !== lastTickSecond && data.currentTurn === game.myColor) {
+          lastTickSecond = data.remaining;
+          window.SFX.tick(data.remaining <= 3);
+        }
+        updateHud();
       }
     });
 
     window.Network.on('opponentLeft', function (data) {
-      if (game && game.onlineActive) {
-        if (data && data.reconnecting && !game.onlineEnded) {
-          window.FX.toast('对手掉线，等待重连...', W / 2, H / 2, '#ffd66e', true);
-        } else if (data && data.youWin && !game.onlineEnded) {
-          // opponent left during active game — we win by forfeit
-          handleForfeitWin();
-        } else {
-          // opponent left while waiting or game already ended
-          window.FX.toast('对手已离开', W / 2, H / 2, '#ff6b6b', false);
-          setTimeout(function () {
-            if (game && game.onlineActive) backToMenu();
-          }, 1500);
-        }
+      if (!game || !game.onlineActive) return;
+      if (data && data.reconnecting && !game.onlineEnded) {
+        window.FX.toast('对手掉线，等待重连…', W / 2, H / 2, '#ffd66e', true);
+      } else if (!game.onlineEnded) {
+        window.FX.toast('对手已离开', W / 2, H / 2, '#ff6b6b', false);
       }
     });
 
     window.Network.on('rematchRequested', function (data) {
-      if (game && game.onlineActive && game.onlineEnded) {
-        game.rematchReceived = true;
-        window.FX.toast((data.nickname || '对手') + ' 请求再战', W / 2, H / 2, '#00e5ff', true);
-        // update win overlay if visible
-        if (!els.winOverlay.classList.contains('hidden')) {
-          showOnlineWinControls();
-        }
-      }
+      if (!game || !game.onlineActive || !game.onlineEnded) return;
+      game.rematchReceived = true;
+      window.SFX.rematch();
+      window.FX.toast((data && data.nickname ? data.nickname : '对手') + ' 请求再战', W / 2, H / 2, '#00e5ff', true);
+      if (els.winOverlay.open) showOnlineWinControls();
+    });
+
+    window.Network.on('rematchAccepted', function () {
+      if (!game || !game.onlineActive) return;
+      window.FX.toast('对手已同意再战', W / 2, H / 2, '#7dffb0', true);
     });
 
     window.Network.on('rematchDeclined', function (data) {
-      if (game && game.onlineActive && game.onlineEnded) {
-        game.rematchRequested = false;
-        window.FX.toast((data.nickname || '对手') + ' 拒绝了再战', W / 2, H / 2, '#ffd66e', true);
-        if (!els.winOverlay.classList.contains('hidden')) {
-          els.winRematchStatus.textContent = '对方拒绝了再战';
-          hide(els.btnRematch);
-        }
+      if (!game || !game.onlineActive || !game.onlineEnded) return;
+      game.rematchRequested = false;
+      window.FX.toast((data && data.nickname ? data.nickname : '对手') + ' 拒绝了再战', W / 2, H / 2, '#ffd66e', true);
+      if (els.winOverlay.open) {
+        els.winRematchStatus.textContent = '对方拒绝了再战';
+        hide(els.btnRematch);
       }
     });
 
     window.Network.on('disconnect', function () {
+      updateConnChip();
       if (game && game.onlineActive && !game.onlineEnded) {
-        window.FX.toast('网络断开，尝试重连...', W / 2, H / 2, '#ff6b6b', false);
+        window.FX.toast('网络断开，正在重连…', W / 2, H / 2, '#ff6b6b', false);
+        if (game.awaitingResult) {
+          game.awaitingResult = false;
+          game.sim.current = game.myColor;
+          game.isMyTurn = true;
+        }
       }
     });
 
     window.Network.on('connect', function () {
+      updateConnChip();
       if (game && game.onlineActive && !game.onlineEnded) {
         window.FX.toast('已重新连接', W / 2, H / 2, '#00e5ff', true);
+      }
+    });
+
+    window.Network.on('connectFailed', function (msg) {
+      updateConnChip();
+      if (scene === 'cover') {
+        var hint = document.getElementById('onlineConnectHint');
+        if (hint) hint.textContent = '无法连接服务器：' + (msg || '请稍后重试');
       }
     });
 
@@ -1137,30 +1393,58 @@
     var rect = canvas.getBoundingClientRect();
     var pt = cellAt(e.clientX - rect.left, e.clientY - rect.top);
     game.ghost = pt;
+    if (pt) game.cursor = pt;
   }
 
   function onPointerDown(e) {
     if (scene !== 'game' || !game) return;
+    if (anyDialogOpen()) return;
     var rect = canvas.getBoundingClientRect();
     var pt = cellAt(e.clientX - rect.left, e.clientY - rect.top);
     if (!pt || !canPlace()) return;
     if (game.sim.board[pt.r][pt.c] === 0) {
+      game.cursor = pt;
       placeMove(pt.r, pt.c);
     }
   }
 
   function onKey(e) {
+    if (anyDialogOpen()) return;
+    if (!game || scene !== 'game') {
+      if (e.code === 'Space' && scene === 'cover') e.preventDefault();
+      return;
+    }
     if (e.code === 'Space') {
       e.preventDefault();
-      if (scene === 'game' && game) switchTheme();
-    } else if (e.key === 'Escape' || e.key === 'Esc') {
-      if (scene === 'game') backToMenu();
-    } else if ((e.key === 'r' || e.key === 'R') && scene === 'game' && game) {
-      if (game.onlineActive) {
-        window.FX.toast('在线模式无法重开', W / 2, H / 2, '#ffd66e', true);
-        return;
-      }
+      switchTheme();
+      return;
+    }
+    if (e.key === 'Escape' || e.key === 'Esc') {
+      backToMenu();
+      return;
+    }
+    if ((e.key === 'r' || e.key === 'R') && !game.onlineActive) {
       startGame(game.settings);
+      return;
+    }
+    var dx = 0;
+    var dy = 0;
+    if (e.key === 'ArrowLeft') dx = -1;
+    else if (e.key === 'ArrowRight') dx = 1;
+    else if (e.key === 'ArrowUp') dy = -1;
+    else if (e.key === 'ArrowDown') dy = 1;
+    if (dx || dy) {
+      e.preventDefault();
+      game.cursor.r = clamp(game.cursor.r + dy, 0, SIZE - 1);
+      game.cursor.c = clamp(game.cursor.c + dx, 0, SIZE - 1);
+      game.ghost = { r: game.cursor.r, c: game.cursor.c };
+      return;
+    }
+    if (e.key === 'Enter' && canPlace()) {
+      e.preventDefault();
+      if (game.sim.board[game.cursor.r][game.cursor.c] === 0) {
+        placeMove(game.cursor.r, game.cursor.c);
+      }
     }
   }
 
@@ -1172,9 +1456,12 @@
     canvas.height = Math.round(H * DPR);
     canvas.style.width = W + 'px';
     canvas.style.height = H + 'px';
+    geomCache = null;
     for (var t = 0; t < window.Theme.ALL.length; t++) window.Theme.clearDecor(window.Theme.ALL[t]);
     if (scene === 'game' && game) {
       window.PS.clear();
+      game._spriteKey = null;
+      game._sprite = null;
       game.ambient = window.Theme.createAmbient(game.theme, window.PS, W, H);
       activeAmbient = game.ambient;
     } else if (cover) {
@@ -1185,9 +1472,14 @@
   }
 
   function updateMuteIcons() {
-    var icon = window.SFX.isMuted() ? '🔇' : '🔊';
-    els.btnMuteGame.textContent = icon;
-    els.btnMuteCover.textContent = icon;
+    var muted = window.SFX.isMuted();
+    els.btnMuteGame.textContent = muted ? '🔇' : '🔊';
+    els.btnMuteGame.setAttribute('aria-label', muted ? '打开声音' : '关闭声音');
+    if (els.btnMuteCover) {
+      var span = els.btnMuteCover.querySelector('.mute-icon');
+      if (span) span.textContent = muted ? '🔇' : '🔊';
+      els.btnMuteCover.setAttribute('aria-label', muted ? '打开声音' : '关闭声音');
+    }
   }
 
   function refreshAutoChip() {
@@ -1215,14 +1507,21 @@
       }
       if (game) startGame(game.settings);
     });
+    els.btnUndo.addEventListener('click', function () {
+      window.SFX.click();
+      undoMove();
+    });
+    els.btnHint.addEventListener('click', function () {
+      hintMove();
+    });
     els.btnAgain.addEventListener('click', function () {
       window.SFX.click();
       if (game && game.onlineActive) {
-        // online: request rematch instead of going back
         if (!game.rematchRequested) {
           game.rematchRequested = true;
+          window.Network.acceptRematch();
           window.Network.requestRematch();
-          els.winRematchStatus.textContent = '已发送再战请求，等待对方...';
+          els.winRematchStatus.textContent = '已发送再战请求，等待对方…';
           hide(els.btnRematch);
         }
         return;
@@ -1230,6 +1529,10 @@
       if (game) startGame(game.settings);
     });
     els.btnBackWin.addEventListener('click', function () {
+      window.SFX.click();
+      backToMenu();
+    });
+    els.btnRematchBack.addEventListener('click', function () {
       window.SFX.click();
       backToMenu();
     });
@@ -1241,6 +1544,22 @@
       window.SFX.toggle();
       updateMuteIcons();
     });
+
+    // 结算对话框：禁止 Esc 直接关闭，必须做出选择
+    els.winOverlay.addEventListener('cancel', function (e) { e.preventDefault(); });
+
+    // 悬停音效（只对带文字的主按钮，避免刷屏）
+    document.addEventListener('pointerover', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button.big-btn, button.ghost-btn, button.chip-btn') : null;
+      if (!btn) return;
+      if (btn.dataset.hovered === '1') return;
+      btn.dataset.hovered = '1';
+      window.SFX.hover();
+    });
+    document.addEventListener('pointerout', function (e) {
+      var btn = e.target && e.target.closest ? e.target.closest('button') : null;
+      if (btn) btn.dataset.hovered = '0';
+    });
   }
 
   window.Gomoku = {
@@ -1251,8 +1570,11 @@
       onResize();
       initCover();
       updateMuteIcons();
+      window.FX.syncIntensity();
+      if (window.PS && window.PS.syncBudget) window.PS.syncBudget();
       canvas.addEventListener('pointermove', onPointerMove);
       canvas.addEventListener('pointerdown', onPointerDown);
+      canvas.addEventListener('pointerleave', function () { if (game) game.ghost = null; });
       window.addEventListener('resize', onResize);
       window.addEventListener('keydown', onKey);
       document.addEventListener('pointerdown', function () {
@@ -1261,12 +1583,27 @@
       last = performance.now();
       raf = requestAnimationFrame(loop);
     },
-    startGame: function (settings) {
-      startGame(settings);
-    },
+    startGame: function (settings) { startGame(settings); },
     placeRemoteMove: placeRemoteMove,
     restoreOnlineGame: restoreOnlineGame,
     backToMenu: backToMenu,
-    refreshAutoChip: refreshAutoChip
+    refreshAutoChip: refreshAutoChip,
+    updateMuteIcons: updateMuteIcons,
+    updateConnChip: updateConnChip,
+    debug: function () {
+      if (!game) return { scene: scene, game: null };
+      return {
+        scene: scene,
+        mode: game.settings.mode,
+        moves: game.sim.moves,
+        current: game.sim.current,
+        winner: game.sim.winner,
+        myColor: game.myColor,
+        aiPlayer: game.aiPlayer,
+        onlineEnded: game.onlineEnded,
+        awaiting: game.awaitingResult,
+        history: game.history.length
+      };
+    }
   };
 })();

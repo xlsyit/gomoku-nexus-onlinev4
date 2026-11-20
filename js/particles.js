@@ -4,9 +4,23 @@
   const parts = [];
   let lastId = 0;
   const CAP = 1300;
+  let budget = 1;
+
+  function setBudget(ratio) {
+    budget = Math.max(0, Math.min(1, ratio));
+    if (budget <= 0) parts.length = 0;
+    else if (parts.length > CAP * budget) parts.splice(0, parts.length - Math.floor(CAP * budget));
+  }
+
+  function syncBudget() {
+    if (!window.GC || !window.GC.effectiveFx) return;
+    const fx = window.GC.effectiveFx();
+    setBudget(fx === 'off' ? 0 : fx === 'lite' ? 0.5 : 1);
+  }
 
   function emit(o) {
-    if (parts.length >= CAP) parts.shift();
+    if (budget <= 0) return null;
+    if (parts.length >= CAP * budget) parts.shift();
     const p = {
       id: ++lastId,
       x: o.x || 0,
@@ -244,6 +258,8 @@
     update: update,
     draw: draw,
     clear: clear,
+    setBudget: setBudget,
+    syncBudget: syncBudget,
     count: function () {
       return parts.length;
     }

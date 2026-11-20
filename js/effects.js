@@ -8,8 +8,33 @@
   const polys = [];
   let slow = { scale: 1, until: 0 };
   let zoom = { from: 1, to: 1, until: 0, dur: 1 };
+  let fireworksTimers = [];
+  let intensity = 'full';
+
+  function level() {
+    return intensity;
+  }
+
+  function syncIntensity() {
+    intensity = (window.GC && window.GC.effectiveFx) ? window.GC.effectiveFx() : 'full';
+    if (intensity === 'off') clear();
+    if (window.PS && window.PS.syncBudget) window.PS.syncBudget();
+  }
+
+  function allowMotion() {
+    return intensity === 'full';
+  }
+
+  function allowFx() {
+    return intensity !== 'off';
+  }
+
+  function scaledCount(n) {
+    return intensity === 'lite' ? Math.max(1, Math.round(n * 0.45)) : n;
+  }
 
   function ring(x, y, color, maxR, dur, lineWidth, glow) {
+    if (!allowFx()) return;
     rings.push({
       x: x, y: y, r: 2, maxR: maxR || 90,
       color: color || '#ffffff', life: dur || 0.6, dur: dur || 0.6,
@@ -18,14 +43,17 @@
   }
 
   function flash(color, alpha, dur) {
+    if (!allowMotion()) return;
     flashes.push({ color: color || '#ffffff', alpha: alpha || 0.3, life: dur || 0.3, dur: dur || 0.3 });
   }
 
   function shake(power, dur) {
+    if (!allowMotion()) return;
     shakes.push({ power: power || 8, life: dur || 0.4, dur: dur || 0.4 });
   }
 
   function bolt(x1, y1, x2, y2, color, offset, segments, lw) {
+    if (!allowMotion()) return;
     const pts = [{ x: x1, y: y1 }];
     const seg = segments || 9;
     const off = offset || 10;
@@ -40,6 +68,7 @@
   }
 
   function polyRing(x, y, maxR, color, sides, dur, lw, glow) {
+    if (!allowMotion()) return;
     polys.push({
       x: x, y: y, r: 6, maxR: maxR || 90,
       color: color || '#ffffff', sides: sides || 6,
@@ -50,19 +79,23 @@
   }
 
   function setSlowmo(scale, dur) {
+    if (!allowMotion()) return;
     slow = { scale: scale, until: performance.now() + dur };
   }
 
   function getTimeScale(now) {
+    if (!allowMotion()) return 1;
     if (now < slow.until) return slow.scale;
     return 1;
   }
 
   function pulseZoom(from, to, dur) {
+    if (!allowMotion()) return;
     zoom = { from: from, to: to, until: performance.now() + dur, dur: dur };
   }
 
   function getZoomScale(now) {
+    if (!allowMotion()) return 1;
     if (now >= zoom.until) return 1;
     const p = 1 - (zoom.until - now) / zoom.dur;
     const eased = 1 - Math.pow(1 - p, 3);
@@ -99,6 +132,7 @@
   }
 
   function shakeOffset() {
+    if (!allowMotion()) return { x: 0, y: 0 };
     let ox = 0;
     let oy = 0;
     for (const s of shakes) {
@@ -110,6 +144,7 @@
   }
 
   function draw(ctx) {
+    if (intensity === 'off') return;
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     for (const r of rings) {
@@ -163,21 +198,27 @@
     }
     ctx.restore();
 
-    for (const f of flashes) {
-      const p = f.life / f.dur;
-      ctx.globalAlpha = f.alpha * p;
-      ctx.fillStyle = f.color;
-      ctx.fillRect(-4000, -4000, 8000, 8000);
+    if (intensity === 'full') {
+      const w = window.innerWidth || 1280;
+      const h = window.innerHeight || 720;
+      for (const f of flashes) {
+        const p = f.life / f.dur;
+        ctx.globalAlpha = f.alpha * p;
+        ctx.fillStyle = f.color;
+        ctx.fillRect(-w * 0.25, -h * 0.25, w * 1.5, h * 1.5);
+      }
     }
     ctx.globalAlpha = 1;
   }
 
   function burst(x, y, colors, count, opts) {
+    if (!allowFx() || !window.PS) return;
     const o = opts || {};
     const speed = o.speed || 180;
     const size = o.size || 3;
     const life = o.life || 0.9;
-    for (let i = 0; i < count; i++) {
+    const n = scaledCount(count);
+    for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const v = speed * (0.35 + Math.random() * 0.85);
       PS.emit({
@@ -200,16 +241,17 @@
   function nova(x, y, colors) {
     burst(x, y, colors, 26, { speed: 220, size: 3.4, life: 1 });
     ring(x, y, colors[0], 130, 0.65, 4, 18);
-    ring(x, y, colors[1] || colors[0], 70, 0.5, 2.4, 12);
+    if (colors[1]) ring(x, y, colors[1], 70, 0.5, 2.4, 12);
   }
 
   function comet(x0, y0, x1, y1, colors) {
+    if (!allowFx() || !window.PS) return;
     const dx = x1 - x0;
     const dy = y1 - y0;
     const len = Math.hypot(dx, dy) || 1;
     const ux = dx / len;
     const uy = dy / len;
-    const steps = Math.max(6, Math.floor(len / 16));
+    const steps = scaledCount(Math.max(6, Math.floor(len / 16)));
     for (let i = 0; i < steps; i++) {
       const t = i / steps;
       const jitter = (Math.random() - 0.5) * 14;
@@ -231,17 +273,19 @@
   }
 
   function fireworks(cx, cy) {
+    if (intensity !== 'full' || !window.PS) return;
     const colors = ['#ffd66e', '#ff86c8', '#7df9ff', '#b18cff', '#7dffb0'];
     for (let i = 0; i < 10; i++) {
       const delay = i * 0.22 + Math.random() * 0.12;
       const x = cx + (Math.random() - 0.5) * Math.min(600, cx * 0.8);
       const y = cy + (Math.random() - 0.5) * Math.min(320, cy * 0.5);
-      setTimeout(function () {
+      const timer = setTimeout(function () {
         const c = colors[Math.floor(Math.random() * colors.length)];
         burst(x, y, [c, '#ffffff'], 34, { speed: 260, size: 3.6, life: 1.15, gravity: 40 });
         ring(x, y, c, 110, 0.6, 3, 14);
-        flash(c, 0.1, 0.18);
+        if (window.FX && window.FX._flashInternal) window.FX._flashInternal(c, 0.1, 0.18);
       }, delay * 1000);
+      fireworksTimers.push(timer);
     }
   }
 
@@ -266,11 +310,17 @@
     shakes.length = 0;
     bolts.length = 0;
     polys.length = 0;
+    slow = { scale: 1, until: 0 };
+    zoom = { from: 1, to: 1, until: 0, dur: 1 };
+    fireworksTimers.forEach(function (t) { clearTimeout(t); });
+    fireworksTimers = [];
+    if (window.PS) window.PS.clear();
   }
 
   window.FX = {
     ring: ring,
     flash: flash,
+    _flashInternal: flash,
     shake: shake,
     bolt: bolt,
     polyRing: polyRing,
@@ -286,6 +336,10 @@
     comet: comet,
     fireworks: fireworks,
     toast: toast,
-    clear: clear
+    clear: clear,
+    syncIntensity: syncIntensity,
+    intensity: level
   };
+
+  syncIntensity();
 })();

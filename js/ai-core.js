@@ -19,6 +19,20 @@
   var FIVE_MASKS = [31, 62, 63];
   var engines = {};
 
+  /* 规则内核由 rules.js 提供（页面里先加载，Worker 里由 ai-worker.js 导入）。
+     缺失时退化为本地判定，保证不会崩。 */
+  var Rules = root.Rules || null;
+
+  function resolveRules() {
+    if (!Rules && typeof importScripts === 'function') {
+      try {
+        importScripts('rules.js');
+        Rules = root.Rules || null;
+      } catch (e) { /* ignore */ }
+    }
+    return Rules;
+  }
+
   function createEngine(size) {
     var SIZE = size || 15;
     var CENTER = (SIZE - 1) / 2;
@@ -183,12 +197,41 @@
     }
 
     function isForbiddenAfter(board, r, c, p, rule) {
-      if (p !== 1 || rule === 'free') return false;
-      board[r][c] = p;
-      var t = localEval(board, r, c, p).totals;
+      if (p !== 1 || !rule || rule === 'free') return false;
+      var R = resolveRules();
+      if (R && R.isForbidden) return R.isForbidden(board, SIZE, r, c, rule);
+      return legacyForbidden(board, r, c, rule);
+    }
+
+    /* 仅在 rules.js 不可用时使用：与正式规则保持同样的“成五优先”语义。 */
+    function legacyForbidden(board, r, c, rule) {
+      if (board[r][c] !== EMPTY) return false;
+      board[r][c] = 1;
+      var five = false;
+      var overline = false;
+      var fours = 0;
+      var live3s = 0;
+      for (var d = 0; d < 4; d++) {
+        var dr = DIRS[d][0];
+        var dc = DIRS[d][1];
+        var len = 1;
+        for (var rr = r + dr, cc = c + dc; inB(rr, cc) && board[rr][cc] === 1; rr += dr, cc += dc) len++;
+        for (var rr2 = r - dr, cc2 = c - dc; inB(rr2, cc2) && board[rr2][cc2] === 1; rr2 -= dr, cc2 -= dc) len++;
+        if (len === 5) {
+          five = true;
+        } else if (len >= 6) {
+          overline = true;
+        } else {
+          var t = localEval(board, r, c, 1).totals;
+          if (t.open4 + t.four >= 1) fours++;
+          else if (t.live3 >= 1) live3s++;
+        }
+      }
       board[r][c] = EMPTY;
-      if (rule === 'folk') return t.overline > 0;
-      return t.overline > 0 || (t.open4 + t.four) >= 2 || t.live3 >= 2;
+      if (five) return false;
+      if (overline) return true;
+      if (rule === 'folk') return false;
+      return fours >= 2 || live3s >= 2;
     }
 
     function hasWinAt(board, r, c, p) {
@@ -521,17 +564,21 @@
       var branch;
       var budget;
       var maxDepth;
-      if (difficulty === 'hard') {
+      if (difficulty === 'master') {
+        branch = 16;
+        budget = 1500;
+        maxDepth = 7;
+      } else if (difficulty === 'hard') {
         branch = 12;
-        budget = 420;
-        maxDepth = occupied < 8 ? 5 : 4;
+        budget = 520;
+        maxDepth = 5;
       } else if (difficulty === 'normal') {
-        branch = 9;
-        budget = 170;
-        maxDepth = 3;
+        branch = 10;
+        budget = 220;
+        maxDepth = 4;
       } else {
         branch = 7;
-        budget = 60;
+        budget = 90;
         maxDepth = 2;
       }
 
@@ -544,17 +591,95 @@
         if (cands[i].win && !win) win = cands[i];
         if (cands[i].block && !block) block = cands[i];
       }
-      if (win) return { r: win.r, c: win.c };
+      if (win) return pick(win);
 
       if (difficulty === 'easy') {
-        if (block && Math.random() < 0.72) return { r: block.r, c: block.c };
-        return weightedPick(cands.slice(0, 6));
+        // 简单：会漏防，也不会主动做双威胁
+        if (block && Math.random() < 0.62) return pick(block);
+        return pick(weightedPick(cands.slice(0, 8)));
       }
-      if (block) return { r: block.r, c: block.c };
+      if (block) return pick(block);
+
+      var deadline = performance.now() + budget;
+
+      // 双威胁（双四 / 四三）：对手只能挡一处，等于必胜
+      if (difficulty === 'hard' || difficulty === 'master') {
+        var threat = findDoubleThreat(board, ai, cands, Math.min(deadline, performance.now() + 240));
+        if (threat) return pick(threat);
+      }
+
+      // 对手下一手就能做出双威胁时，优先抢占
+      if (difficulty === 'normal' || difficulty === 'hard' || difficulty === 'master') {
+        var def = findOpponentThreat(board, ai, cands, deadline, rule);
+        if (def) return pick(def);
+      }
 
       var move = searchRoot(board, ai, branch, maxDepth, budget, rule);
-      if (move) return { r: move.r, c: move.c };
-      return { r: cands[0].r, c: cands[0].c };
+      if (move) return pick(move);
+      return pick(cands[0]);
+    }
+
+    function pick(c) {
+      return { r: c.r, c: c.c };
+    }
+
+    function countWinPoints(board, p) {
+      var list = getCandidates(board, p, 40, false, false);
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].win) out.push(list[i]);
+      }
+      return out;
+    }
+
+    function findDoubleThreat(board, ai, cands, deadline) {
+      for (var i = 0; i < cands.length; i++) {
+        if (performance.now() > deadline) return null;
+        var c = cands[i];
+        if (c.win) continue;
+        board[c.r][c.c] = ai;
+        var wins = countWinPoints(board, ai);
+        board[c.r][c.c] = EMPTY;
+        if (wins.length >= 2) return c;
+      }
+      return null;
+    }
+
+    /* 对手若有一手能形成双威胁，必须提前占掉那个点。 */
+    function findOpponentThreat(board, ai, cands, deadline, rule) {
+      var opp = 3 - ai;
+      var oppCands = getCandidates(board, opp, 16, true, false);
+      for (var i = 0; i < oppCands.length; i++) {
+        if (performance.now() > deadline) return null;
+        var c = oppCands[i];
+        if (c.win) continue;
+        board[c.r][c.c] = opp;
+        var wins = countWinPoints(board, opp);
+        board[c.r][c.c] = EMPTY;
+        if (wins.length < 2) continue;
+        // 黑方在禁手规则下，这个双威胁本身可能就是禁手，不必防
+        if (opp === 1 && rule && rule !== 'free' && Rules && Rules.isForbidden &&
+            Rules.isForbidden(board, SIZE, c.r, c.c, rule)) continue;
+        for (var j = 0; j < cands.length; j++) {
+          if (cands[j].r === c.r && cands[j].c === c.c) return cands[j];
+        }
+      }
+      return null;
+    }
+
+    function chooseMoveQuick(board, ai, rule) {
+      rule = rule || 'free';
+      var center = Math.floor(CENTER);
+      if (countOccupied(board) === 0) return { r: center, c: center };
+      var cands = getCandidates(board, ai, 16, true, rule);
+      if (!cands.length) return { r: center, c: center };
+      for (var i = 0; i < cands.length; i++) {
+        if (cands[i].win) return pick(cands[i]);
+      }
+      for (var j = 0; j < cands.length; j++) {
+        if (cands[j].block) return pick(cands[j]);
+      }
+      return pick(cands[0]);
     }
 
     function hasWinScore(board, p) {
@@ -567,6 +692,7 @@
 
     return {
       chooseMove: chooseMove,
+      chooseMoveQuick: chooseMoveQuick,
       hasWinScore: hasWinScore,
       evalCell: evalCell,
       isForbiddenAfter: isForbiddenAfter,

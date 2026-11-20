@@ -3,6 +3,7 @@
 
   var core = window.AI;
   var worker = null;
+  var workerBroken = false;
   var seq = 0;
   var pending = {};
 
@@ -21,71 +22,82 @@
     return engine().chooseMove(board, ai, difficulty, currentRule(rule));
   }
 
+  /* 轻量兜底：绝不阻塞主线程做全量搜索。 */
+  function chooseMoveQuick(board, ai, rule) {
+    return engine().chooseMoveQuick(board, ai, currentRule(rule));
+  }
+
+  function resolveAll(pick) {
+    Object.keys(pending).forEach(function (id) {
+      var item = pending[id];
+      if (!item) return;
+      if (item.timer) clearTimeout(item.timer);
+      try { item.resolve(pick(item)); } catch (e) { item.resolve(null); }
+    });
+    pending = {};
+  }
+
+  function createWorker() {
+    try {
+      worker = new Worker('js/ai-worker.js?v=4.2');
+      worker.onmessage = function (e) {
+        var d = e.data || {};
+        var item = pending[d.id];
+        if (!item) return;
+        delete pending[d.id];
+        if (item.timer) clearTimeout(item.timer);
+        item.resolve(d.move || null);
+      };
+      worker.onerror = function () {
+        workerBroken = true;
+        worker = null;
+        resolveAll(function (item) {
+          return engine().chooseMoveQuick(item.board, item.ai, item.rule);
+        });
+      };
+    } catch (e) {
+      worker = null;
+      workerBroken = true;
+    }
+  }
+
   function chooseMoveAsync(board, ai, difficulty, rule) {
     var size = window.GC ? window.GC.SIZE : 15;
     var ruleOn = currentRule(rule);
+    var diff = difficulty || 'normal';
     return new Promise(function (resolve) {
-      function fallback() {
+      if (workerBroken || typeof Worker === 'undefined' || window.location.protocol === 'file:') {
         setTimeout(function () {
-          resolve(chooseMove(board, ai, difficulty, ruleOn));
+          resolve(engine().chooseMoveQuick(board, ai, ruleOn));
         }, 0);
-      }
-      if (typeof Worker === 'undefined' || window.location.protocol === 'file:') {
-        fallback();
         return;
       }
+      if (!worker) createWorker();
       if (!worker) {
-        try {
-          worker = new Worker('js/ai-core.js');
-          worker.onmessage = function (e) {
-            var d = e.data || {};
-            if (pending[d.id]) {
-              var item = pending[d.id];
-              delete pending[d.id];
-              if (item.timer) clearTimeout(item.timer);
-              item.resolve(d.move || null);
-            }
-          };
-          worker.onerror = function () {
-            worker = null;
-            var ids = Object.keys(pending);
-            for (var i = 0; i < ids.length; i++) {
-              var item = pending[ids[i]];
-              if (!item) continue;
-              if (item.timer) clearTimeout(item.timer);
-              item.resolve(chooseMove(item.board, item.ai, item.difficulty, item.rule));
-            }
-            pending = {};
-          };
-        } catch (e) {
-          worker = null;
-        }
-      }
-      if (!worker) {
-        fallback();
+        setTimeout(function () { resolve(engine().chooseMoveQuick(board, ai, ruleOn)); }, 0);
         return;
       }
       var id = ++seq;
+      var copy = [];
+      for (var r = 0; r < board.length; r++) copy.push(board[r].slice());
       pending[id] = {
         resolve: resolve,
-        board: board,
+        board: copy,
         ai: ai,
-        difficulty: difficulty || 'normal',
         rule: ruleOn,
         timer: setTimeout(function () {
           var item = pending[id];
           if (!item) return;
           delete pending[id];
-          item.resolve(chooseMove(item.board, item.ai, item.difficulty, item.rule));
-        }, 2500)
+          // 超时只走快速启发式，避免主线程长时间卡死
+          item.resolve(engine().chooseMoveQuick(item.board, item.ai, item.rule));
+        }, 3200)
       };
-      var copy = [];
-      for (var r = 0; r < board.length; r++) copy.push(board[r].slice());
       worker.postMessage({
         id: id,
         board: copy,
         ai: ai,
-        difficulty: difficulty || 'normal',
+        difficulty: diff,
         rule: ruleOn,
         size: size
       });
@@ -94,6 +106,7 @@
 
   window.AI = {
     chooseMove: chooseMove,
+    chooseMoveQuick: chooseMoveQuick,
     chooseMoveAsync: chooseMoveAsync,
     getEngine: core.getEngine,
     create: core.create,
