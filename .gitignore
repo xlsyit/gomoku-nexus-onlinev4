@@ -6,6 +6,16 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local web servers
+# Node
+node_modules/
+npm-debug.log*
+
+# Runtime data (never commit)
+server/gomoku.db
+server/gomoku.db-shm
+server/gomoku.db-wal
 server.log
 tunnel.log
+
+# Local env
+.env
