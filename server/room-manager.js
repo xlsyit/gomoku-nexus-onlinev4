@@ -1,8 +1,17 @@
 'use strict';
 
+/*
+ * 房间状态机（服务端）
+ * ---------------------------------------------------------------
+ * - 所有规则判断都交给 js/rules.js，禁止在服务端另写一套。
+ * - 胜负/和棋/禁手/超时/掉线全部由服务端裁决，客户端只负责展示。
+ */
+var Rules = require('../js/rules.js');
+
 var rooms = {};
-var IDLE_TIMEOUT = 10 * 60 * 1000;
+var IDLE_TIMEOUT = 30 * 60 * 1000;
 var REJOIN_GRACE = 60 * 1000;
+var TURN_SECONDS = 30;
 var idleTimer = null;
 
 function makeToken() {
@@ -32,19 +41,31 @@ function normalizeRule(r) {
   return ['free', 'renju', 'folk'].indexOf(r) >= 0 ? r : 'free';
 }
 
+function ensureBoard(room) {
+  if (!room.board) room.board = Rules.makeBoard(room.boardSize);
+  return room.board;
+}
+
+function startClock(room, now) {
+  room.turnDeadline = (now || Date.now()) + TURN_SECONDS * 1000;
+}
+
+function remainingSeconds(room, now) {
+  if (!room.turnDeadline) return TURN_SECONDS;
+  var ms = room.turnDeadline - (now || Date.now());
+  return Math.max(0, Math.ceil(ms / 1000));
+}
+
 function createRoom(socketId, nickname, token, opts) {
   var code = generateCode();
-  while (rooms[code]) {
-    code = generateCode();
-  }
-  var size = normalizeSize(opts && opts.boardSize);
-  rooms[code] = {
+  while (rooms[code]) code = generateCode();
+  var room = {
     code: code,
-    boardSize: size,
+    boardSize: normalizeSize(opts && opts.boardSize),
     rule: normalizeRule(opts && opts.rule),
     isPublic: !!(opts && opts.isPublic),
     players: {
-      1: { socketId: socketId, nickname: nickname, token: token || makeToken(), connected: true, disconnectedAt: null },
+      1: { socketId: socketId, nickname: nickname, token: token || makeToken(), connected: true, disconnectedAt: null, tabId: (opts && opts.tabId) || '' },
       2: null
     },
     currentTurn: 1,
@@ -54,37 +75,43 @@ function createRoom(socketId, nickname, token, opts) {
     createdAt: Date.now(),
     gameOver: false,
     winner: 0,
-    resultReported: false
+    draw: false,
+    reason: '',
+    resultReported: false,
+    turnDeadline: 0,
+    rematch: { 1: false, 2: false }
   };
-  return { code: code, token: rooms[code].players[1].token };
+  rooms[code] = room;
+  return { code: code, token: room.players[1].token, room: room };
 }
 
+/* 加入房间时以房主配置为准：不再因棋盘大小/规则不一致而拒绝。 */
 function joinRoom(code, socketId, nickname, token, opts) {
   var room = rooms[code];
-  if (!room) return { error: '房间不存在' };
-  if (room.players[2]) return { error: '房间已满' };
-  if (room.gameOver) return { error: '游戏已结束' };
-  var size = normalizeSize(opts && opts.boardSize);
-  if (size !== room.boardSize) return { error: '棋盘大小不一致' };
-  if (normalizeRule(opts && opts.rule) !== room.rule) return { error: '对局规则不一致' };
-  room.players[2] = { socketId: socketId, nickname: nickname, token: token || makeToken(), connected: true, disconnectedAt: null };
-  return { room: room };
+  if (!room) return { error: '房间不存在或已过期' };
+  if (room.players[2] && room.players[2].socketId !== socketId) return { error: '房间已满' };
+  if (room.gameOver && room.moveCount > 0) return { error: '本局已结束' };
+
+  if (room.players[2] && room.players[2].socketId === socketId) {
+    room.players[2].connected = true;
+    room.players[2].disconnectedAt = null;
+    return { room: room, color: 2, rejoin: true };
+  }
+
+  room.players[2] = {
+    socketId: socketId,
+    nickname: nickname,
+    token: token || makeToken(),
+    connected: true,
+    disconnectedAt: null,
+    tabId: (opts && opts.tabId) || ''
+  };
+  if (!room.turnDeadline) startClock(room);
+  return { room: room, color: 2, rejoin: false };
 }
 
 function getRoom(code) {
   return rooms[code] || null;
-}
-
-function removePlayer(socketId) {
-  for (var code in rooms) {
-    var room = rooms[code];
-    for (var color = 1; color <= 2; color++) {
-      if (room.players[color] && room.players[color].socketId === socketId) {
-        return removePlayerByColor(room, color);
-      }
-    }
-  }
-  return null;
 }
 
 function getPlayerColor(socketId, room) {
@@ -95,31 +122,87 @@ function getPlayerColor(socketId, room) {
 
 function getPlayerNickname(socketId, room) {
   var color = getPlayerColor(socketId, room);
-  if (color === 0) return null;
-  return room.players[color].nickname;
+  return color === 0 ? null : room.players[color].nickname;
 }
 
-function removePlayerByColor(room, color) {
-  var code = room.code;
-  if (color === 2 && room.players[2]) {
-    var leftNick = room.players[2].nickname;
-    room.players[2] = null;
-    room.gameOver = true;
-    room.winner = 1;
-    return { room: room, code: code, leftNickname: leftNick, winnerColor: 1 };
-  }
-  if (color === 1 && room.players[1]) {
-    if (room.players[2]) {
-      var leftNick2 = room.players[1].nickname;
-      room.gameOver = true;
-      room.winner = 2;
-      delete rooms[code];
-      return { room: room, code: code, leftNickname: leftNick2, winnerColor: 2 };
+function bothPresent(room) {
+  return !!(room.players[1] && room.players[2] &&
+    room.players[1].connected && room.players[2].connected);
+}
+
+function finishGame(room, winner, reason, extra) {
+  if (room.gameOver) return null;
+  room.gameOver = true;
+  room.winner = winner || 0;
+  room.draw = reason === 'draw';
+  room.reason = reason || '';
+  room.turnDeadline = 0;
+  var out = {
+    code: room.code,
+    winner: room.winner,
+    draw: room.draw,
+    reason: room.reason,
+    winLine: (extra && extra.winLine) || null,
+    lastMove: room.lastMove ? { r: room.lastMove.r, c: room.lastMove.c } : null,
+    players: {
+      1: room.players[1] ? room.players[1].nickname : null,
+      2: room.players[2] ? room.players[2].nickname : null
     }
-    delete rooms[code];
-    return null;
+  };
+  if (!room.draw && room.winner) {
+    var lose = room.winner === 1 ? 2 : 1;
+    out.winnerNickname = room.players[room.winner] ? room.players[room.winner].nickname : null;
+    out.loserNickname = room.players[lose] ? room.players[lose].nickname : null;
+  } else if (room.draw) {
+    out.winnerNickname = null;
+    out.loserNickname = null;
   }
-  return null;
+  return out;
+}
+
+function submitMove(socketId, code, r, c) {
+  var room = rooms[code];
+  if (!room) return { error: '房间不存在' };
+  if (room.gameOver) return { error: '本局已结束' };
+  var color = getPlayerColor(socketId, room);
+  if (color === 0) return { error: '不在房间中' };
+  if (!room.players[1] || !room.players[2]) return { error: '对手还未加入' };
+  if (room.currentTurn !== color) return { error: '不是你的回合' };
+
+  var board = ensureBoard(room);
+  var size = room.boardSize;
+
+  if (typeof r !== 'number' || typeof c !== 'number') return { error: '坐标无效' };
+  r = Math.floor(r);
+  c = Math.floor(c);
+  if (!Rules.inB(size, r, c)) return { error: '坐标越界' };
+  if (board[r][c] !== 0) return { error: '位置已被占据' };
+
+  var verdict = Rules.judge(board, size, room.rule, r, c, color);
+  if (!verdict.ok) {
+    if (verdict.forbidden) {
+      room.lastMove = { r: r, c: c };
+      var forbiddenResult = finishGame(room, 2, 'forbidden', { winLine: null });
+      return { room: room, color: color, forbidden: true, result: forbiddenResult };
+    }
+    return { error: verdict.error || '落子失败' };
+  }
+
+  room.moveCount++;
+  room.lastMove = { r: r, c: c };
+
+  if (verdict.win) {
+    var winResult = finishGame(room, color, 'five', { winLine: verdict.winLine });
+    return { room: room, color: color, result: winResult };
+  }
+  if (verdict.draw) {
+    var drawResult = finishGame(room, 0, 'draw', {});
+    return { room: room, color: color, result: drawResult };
+  }
+
+  room.currentTurn = color === 1 ? 2 : 1;
+  startClock(room);
+  return { room: room, color: color, result: null };
 }
 
 function markDisconnected(socketId) {
@@ -138,7 +221,7 @@ function markDisconnected(socketId) {
   return null;
 }
 
-function rejoinRoom(code, token, socketId) {
+function rejoinRoom(code, token, socketId, tabId) {
   var room = rooms[code];
   if (!room) return { error: '房间不存在或已过期' };
   for (var color = 1; color <= 2; color++) {
@@ -147,12 +230,8 @@ function rejoinRoom(code, token, socketId) {
       p.socketId = socketId;
       p.connected = true;
       p.disconnectedAt = null;
-      return {
-        room: room,
-        color: color,
-        nickname: p.nickname,
-        state: getState(room)
-      };
+      if (tabId) p.tabId = tabId;
+      return { room: room, color: color, nickname: p.nickname, state: getState(room) };
     }
   }
   return { error: '重新加入失败，令牌无效' };
@@ -160,26 +239,21 @@ function rejoinRoom(code, token, socketId) {
 
 function getState(room) {
   var size = room.boardSize || 15;
-  var board = [];
-  if (!room.board) {
-    for (var r = 0; r < size; r++) {
-      var row = [];
-      for (var c = 0; c < size; c++) row.push(0);
-      board.push(row);
-    }
-  } else {
-    for (var rr = 0; rr < size; rr++) board.push(room.board[rr].slice());
-  }
+  var board = room.board ? Rules.cloneBoard(room.board) : Rules.makeBoard(size);
   return {
     board: board,
     size: size,
     rule: room.rule || 'free',
-    renju: !!room.renju || (room.rule && room.rule !== 'free'),
+    renju: !!(room.rule && room.rule !== 'free'),
     currentTurn: room.currentTurn,
     winner: room.winner,
+    draw: !!room.draw,
+    reason: room.reason || '',
     gameOver: room.gameOver,
     moveCount: room.moveCount,
     lastMove: room.lastMove ? { r: room.lastMove.r, c: room.lastMove.c } : null,
+    remaining: remainingSeconds(room),
+    turnSeconds: TURN_SECONDS,
     players: {
       1: room.players[1] ? room.players[1].nickname : null,
       2: room.players[2] ? room.players[2].nickname : null
@@ -187,150 +261,159 @@ function getState(room) {
   };
 }
 
+function removePlayerByColor(room, color) {
+  var code = room.code;
+  var started = room.moveCount > 0 || room.board !== null;
+  var p = room.players[color];
+  if (!p) return null;
+
+  if (!room.gameOver && started) {
+    var result = finishGame(room, color === 1 ? 2 : 1, 'leave', {});
+    return {
+      room: room, code: code, leftNickname: p.nickname, winnerColor: room.winner,
+      result: result, forfeit: true, hostLeft: color === 1
+    };
+  }
+
+  if (color === 2) {
+    room.players[2] = null;
+    return { room: room, code: code, leftNickname: p.nickname, forfeit: false };
+  }
+
+  // 房主离开：房间直接关闭
+  var guest = room.players[2] ? room.players[2].nickname : null;
+  delete rooms[code];
+  return { room: room, code: code, leftNickname: p.nickname, guestNickname: guest, closed: true, forfeit: false };
+}
+
+function removePlayer(socketId) {
+  for (var code in rooms) {
+    var room = rooms[code];
+    for (var color = 1; color <= 2; color++) {
+      if (room.players[color] && room.players[color].socketId === socketId) {
+        return removePlayerByColor(room, color);
+      }
+    }
+  }
+  return null;
+}
+
+/* 掉线宽限期结束：判定离开者负，并返回需要记账的结果。 */
 function checkRejoinTimeouts(now) {
   var expired = [];
   for (var code in rooms) {
     var room = rooms[code];
     for (var color = 1; color <= 2; color++) {
       var p = room.players[color];
-      if (p && p.disconnectedAt && now - p.disconnectedAt >= REJOIN_GRACE) {
-        var other = color === 1 ? 2 : 1;
-        if (!room.gameOver && room.players[other] && room.players[other].disconnectedAt) {
-          delete rooms[code];
-          break;
-        }
-        if (room.gameOver) {
-          room.players[color] = null;
-          if (!room.players[1] && !room.players[2]) delete rooms[code];
-        } else {
-          var res = removePlayerByColor(room, color);
-          if (res) expired.push(res);
-        }
+      if (!p || !p.disconnectedAt) continue;
+      if (now - p.disconnectedAt < REJOIN_GRACE) continue;
+
+      var other = color === 1 ? 2 : 1;
+      if (!room.players[other] || room.players[other].disconnectedAt) {
+        delete rooms[code];
         break;
       }
+      if (room.gameOver) {
+        room.players[color] = null;
+        if (!room.players[1] && !room.players[2]) delete rooms[code];
+        break;
+      }
+      var started = room.moveCount > 0 || room.board !== null;
+      if (started) {
+        var result = finishGame(room, other, 'disconnect', {});
+        room.players[color] = null;
+        expired.push({ room: room, code: code, leftNickname: p.nickname, winnerColor: room.winner, result: result });
+      } else {
+        room.players[color] = null;
+        if (!room.players[1]) delete rooms[code];
+      }
+      break;
     }
   }
   return expired;
 }
 
-function validateMove(socketId, code, r, c) {
+/* 每步 30 秒：超时方判负。 */
+function checkClocks(now) {
+  var expired = [];
+  for (var code in rooms) {
+    var room = rooms[code];
+    if (!room || room.gameOver || !room.turnDeadline) continue;
+    if (!bothPresent(room)) continue;
+    if (now < room.turnDeadline) continue;
+    var loser = room.currentTurn;
+    var winner = loser === 1 ? 2 : 1;
+    var result = finishGame(room, winner, 'timeout', {});
+    expired.push({ room: room, code: code, loserColor: loser, winnerColor: winner, result: result });
+  }
+  return expired;
+}
+
+function tickClocks() {
+  var now = Date.now();
+  var snapshots = [];
+  for (var code in rooms) {
+    var room = rooms[code];
+    if (!room || room.gameOver || !bothPresent(room)) continue;
+    room.remaining = remainingSeconds(room, now);
+    snapshots.push({ code: code, remaining: room.remaining, currentTurn: room.currentTurn });
+  }
+  return snapshots;
+}
+
+function closeRoom(code) {
+  var room = rooms[code];
+  if (!room) return null;
+  delete rooms[code];
+  return room;
+}
+
+function submitRematchVote(socketId, code) {
   var room = rooms[code];
   if (!room) return { error: '房间不存在' };
-  if (room.gameOver) return { error: '游戏已结束' };
   var color = getPlayerColor(socketId, room);
   if (color === 0) return { error: '不在房间中' };
-  if (room.currentTurn !== color) return { error: '不是你的回合' };
-  if (!room.board) {
-    room.board = [];
-    for (var i = 0; i < room.boardSize; i++) {
-      var row = [];
-      for (var j = 0; j < room.boardSize; j++) row.push(0);
-      room.board.push(row);
-    }
-  }
-  if (r < 0 || r >= room.boardSize || c < 0 || c >= room.boardSize) return { error: '坐标越界' };
-  if (room.board[r][c] !== 0) return { error: '位置已被占据' };
-  if (room.rule && room.rule !== 'free' && color === 1 && isRenjuForbidden(room.board, r, c, room.boardSize, room.rule)) {
-    return { error: '黑方禁手，白方获胜' };
-  }
-  return { room: room, color: color };
+  if (!room.gameOver) return { error: '对局尚未结束' };
+  if (!bothPresent(room)) return { error: '对手不在线，无法再战' };
+  room.rematch[color] = true;
+  var both = room.rematch[1] && room.rematch[2];
+  if (!both) return { room: room, waiting: true, color: color };
+
+  // 双方同意：交换黑白，重置棋盘
+  room.gameOver = false;
+  room.winner = 0;
+  room.draw = false;
+  room.reason = '';
+  room.resultReported = false;
+  room.board = null;
+  room.moveCount = 0;
+  room.lastMove = null;
+  room.currentTurn = 1;
+  room.rematch = { 1: false, 2: false };
+
+  var oldBlack = room.players[1];
+  var oldWhite = room.players[2];
+  room.players[1] = oldWhite;
+  room.players[2] = oldBlack;
+  startClock(room);
+  return { room: room, started: true };
 }
 
-var RENJU_LIVE3_MASKS = [14, 22, 26, 28];
-
-function renjuLineShape(line) {
-  var res = { overline: false, four: false, live3: false };
-  var mask = 0;
-  var own = 0;
-  var opp = 0;
-  for (var i = 0; i < line.length; i++) {
-    var v = line[i];
-    var ownBit = v === 1 ? 1 : 0;
-    var oppBit = v !== 0 && v !== 1 ? 1 : 0;
-    mask = ((mask << 1) | ownBit) & 63;
-    own += ownBit;
-    opp += oppBit;
-    if (i >= 6) {
-      var old = line[i - 6];
-      if (old === 1) own--;
-      else if (old !== 0) opp--;
-    }
-    if (i < 5) continue;
-    if (opp > 0) continue;
-    if (mask === 63) res.overline = true;
-    if (own === 4) res.four = true;
-    else if (own === 3 && RENJU_LIVE3_MASKS.indexOf(mask) >= 0) res.live3 = true;
-  }
-  return res;
-}
-
-function isRenjuForbidden(board, r, c, size, rule) {
-  var n = size || board.length || 15;
-  if (board[r][c] !== 0) return false;
-  board[r][c] = 1;
-  var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-  var overline = false;
-  var fours = 0;
-  var live3 = 0;
-  for (var d = 0; d < dirs.length; d++) {
-    var dr = dirs[d][0];
-    var dc = dirs[d][1];
-    var line = [];
-    for (var k = -4; k <= 4; k++) {
-      var rr = r + dr * k;
-      var cc = c + dc * k;
-      line.push(rr >= 0 && rr < n && cc >= 0 && cc < n ? board[rr][cc] : -1);
-    }
-    var shape = renjuLineShape(line);
-    if (shape.overline) overline = true;
-    if (shape.four) fours++;
-    if (shape.live3) live3++;
-  }
-  board[r][c] = 0;
-  if (rule === 'folk') return overline;
-  return overline || fours >= 2 || live3 >= 2;
-}
-
-function hasFive(board, r, c, color, size) {
-  var dirs = [[1, 0], [0, 1], [1, 1], [1, -1]];
-  var n = size || board.length || 15;
-  for (var d = 0; d < dirs.length; d++) {
-    var dr = dirs[d][0];
-    var dc = dirs[d][1];
-    var len = 1;
-    for (var rr = r + dr, cc = c + dc; rr >= 0 && rr < n && cc >= 0 && cc < n && board[rr][cc] === color; rr += dr, cc += dc) len++;
-    for (var rr2 = r - dr, cc2 = c - dc; rr2 >= 0 && rr2 < n && cc2 >= 0 && cc2 < n && board[rr2][cc2] === color; rr2 -= dr, cc2 -= dc) len++;
-    if (len >= 5) return true;
-  }
-  return false;
-}
-
-function applyMove(room, color, r, c) {
-  if (!room.board) return { winner: 0 };
-  room.board[r][c] = color;
-  room.moveCount++;
-  room.lastMove = { r: r, c: c };
-  if (hasFive(room.board, r, c, color, room.boardSize)) {
-    room.gameOver = true;
-    room.winner = color;
-    return { winner: color };
-  }
-  room.currentTurn = color === 1 ? 2 : 1;
-  return { winner: 0 };
-}
-
-function setGameOver(code) {
+function declineRematch(socketId, code) {
   var room = rooms[code];
-  if (room) room.gameOver = true;
+  if (!room) return null;
+  var color = getPlayerColor(socketId, room);
+  if (color) room.rematch[color] = false;
+  return { room: room, color: color };
 }
 
 function cleanupIdle() {
   var now = Date.now();
   for (var code in rooms) {
     var room = rooms[code];
-    if (now - room.createdAt > IDLE_TIMEOUT) {
-      delete rooms[code];
-    }
+    var stale = now - room.createdAt > IDLE_TIMEOUT;
+    var empty = !room.players[1] && !room.players[2];
+    if (stale || empty) delete rooms[code];
   }
 }
 
@@ -353,25 +436,29 @@ function listPublicRooms() {
 function startIdleCleanup() {
   if (idleTimer) clearInterval(idleTimer);
   idleTimer = setInterval(cleanupIdle, 60000);
+  if (idleTimer.unref) idleTimer.unref();
 }
 
 startIdleCleanup();
 
 module.exports = {
+  TURN_SECONDS: TURN_SECONDS,
   createRoom: createRoom,
   joinRoom: joinRoom,
   getRoom: getRoom,
-  removePlayer: removePlayer,
+  getState: getState,
   getPlayerColor: getPlayerColor,
   getPlayerNickname: getPlayerNickname,
-  validateMove: validateMove,
-  applyMove: applyMove,
-  setGameOver: setGameOver,
-  hasFive: hasFive,
-  isRenjuForbidden: isRenjuForbidden,
+  submitMove: submitMove,
   markDisconnected: markDisconnected,
   rejoinRoom: rejoinRoom,
-  getState: getState,
   checkRejoinTimeouts: checkRejoinTimeouts,
+  checkClocks: checkClocks,
+  tickClocks: tickClocks,
+  remainingSeconds: remainingSeconds,
+  removePlayer: removePlayer,
+  closeRoom: closeRoom,
+  submitRematchVote: submitRematchVote,
+  declineRematch: declineRematch,
   listPublicRooms: listPublicRooms
 };
